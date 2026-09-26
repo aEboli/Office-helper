@@ -15,7 +15,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Title,
     [Parameter(Mandatory = $true)][string]$NotesPath,
     [string[]]$Assets = @(),
-    [string]$Repo = 'aEboli/ChatSheet'
+    [string]$Repo = 'aEboli/Office-helper'
 )
 
 Set-StrictMode -Version Latest

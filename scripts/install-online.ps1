@@ -9,7 +9,7 @@
 [CmdletBinding()]
 param(
     [string]$Version = 'latest',
-    [string]$Repository = 'aEboli/ChatSheet',
+    [string]$Repository = 'aEboli/Office-helper',
     [switch]$KeepDownload
 )
 

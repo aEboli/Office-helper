@@ -42,7 +42,7 @@ namespace ChatSheet.AddIn.Storage
         /// <summary>写操作逐项审批，读操作自动执行。</summary>
         PerWrite = 0,
 
-        /// <summary>每轮任务开始前统一确认一次。</summary>
+        /// <summary>本轮每张工作表/文档的同类操作首次确认；授权只在本轮有效。</summary>
         PerTurn = 1,
 
         /// <summary>全自动执行，依赖撤销兜底。</summary>

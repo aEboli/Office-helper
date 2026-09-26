@@ -10,7 +10,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Tag,
-    [string]$Repo = 'aEboli/ChatSheet',
+    [string]$Repo = 'aEboli/Office-helper',
     [string]$LocalDir = 'artifacts\release'
 )
 

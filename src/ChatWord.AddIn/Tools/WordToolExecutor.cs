@@ -215,11 +215,23 @@ namespace ChatWord.AddIn.Tools
         {
             WordCom.Set(target.Range, "Text", expected);
             var actual = WordCom.String(target.Range, "Text");
-            if (!string.Equals(actual, expected, StringComparison.Ordinal))
+            // Word/WPS 会把调用方传入的 LF 或 CRLF 段落换行存成 CR；按换行语义比较，
+            // 避免多段落写入已经成功，却仅因宿主规范化换行而被误报为读回失败。
+            if (!TextMatches(actual, expected))
             { return ToolResult.Failure("READBACK_FAILED", "文档已尝试写入，但目标读回与预期不一致；请重新读取文档确认实际状态。"); }
             var canUndo = target.StoryType == 1 && !string.IsNullOrEmpty(undoId);
             if (canUndo) { _undo.Add(undoId, document, target, before, actual); }
             return WriteResult(target, WordDocumentContext.Sanitize(actual), canUndo ? undoId : null);
+        }
+
+        private static bool TextMatches(string actual, string expected)
+        {
+            return string.Equals(NormalizeLineEndings(actual), NormalizeLineEndings(expected), StringComparison.Ordinal);
+        }
+
+        private static string NormalizeLineEndings(string value)
+        {
+            return (value ?? string.Empty).Replace("\r\n", "\n").Replace("\r", "\n");
         }
 
         private static bool ContainsMarkers(string value)
@@ -253,7 +265,60 @@ namespace ChatWord.AddIn.Tools
         private ToolResult FormatParagraph(JObject args)
         {
             object document = ActiveDocument(); WordTarget target = null; object format = null;
-            try { target = WordTargetResolver.Resolve(document, args); EnsureWritable(document); format = WordCom.Get(target.Range, "ParagraphFormat"); var alignment = args?.Value<string>("alignment"); if (!string.IsNullOrWhiteSpace(alignment)) { var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase) { ["left"] = 0, ["center"] = 1, ["right"] = 2, ["justify"] = 3 }; if (!map.TryGetValue(alignment, out var value)) { throw new WordToolException("ARGUMENT_INVALID", "不支持的段落对齐方式。"); } WordCom.Set(format, "Alignment", value); } SetIf(args, "space_before", format, "SpaceBefore"); SetIf(args, "space_after", format, "SpaceAfter"); SetIf(args, "keep_with_next", format, "KeepWithNext"); return ToolResult.Success(new { story = target.Story, start = target.Start, end = target.End, readback = new { alignment = WordCom.String(format, "Alignment"), spaceBefore = WordCom.String(format, "SpaceBefore"), spaceAfter = WordCom.String(format, "SpaceAfter") }, canUndo = false, undoNote = "段落格式未保存完整快照，不能提供虚假撤销。" }); }
+            try
+            {
+                target = WordTargetResolver.Resolve(document, args);
+                EnsureWritable(document);
+                format = WordCom.Get(target.Range, "ParagraphFormat");
+
+                var alignment = args?.Value<string>("alignment");
+                int? alignmentValue = null;
+                if (!string.IsNullOrWhiteSpace(alignment))
+                {
+                    var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                    { ["left"] = 0, ["center"] = 1, ["right"] = 2, ["justify"] = 3 };
+                    if (!map.TryGetValue(alignment, out var value))
+                    { throw new WordToolException("ARGUMENT_INVALID", "不支持的段落对齐方式。"); }
+                    alignmentValue = value;
+                }
+
+                string firstLineIndentChars = null;
+                var indentToken = args?["first_line_indent_chars"];
+                if (indentToken != null && indentToken.Type != JTokenType.Null)
+                {
+                    if (indentToken.Type != JTokenType.Integer && indentToken.Type != JTokenType.Float)
+                    { throw new WordToolException("ARGUMENT_INVALID", "首行缩进必须是字符数值。"); }
+                    var requestedIndent = indentToken.Value<double>();
+                    if (double.IsNaN(requestedIndent) || double.IsInfinity(requestedIndent))
+                    { throw new WordToolException("ARGUMENT_INVALID", "首行缩进必须是有限数值。"); }
+
+                    WordCom.Set(format, "CharacterUnitFirstLineIndent", requestedIndent);
+                    var actualIndent = Convert.ToDouble(WordCom.Get(format, "CharacterUnitFirstLineIndent"), System.Globalization.CultureInfo.InvariantCulture);
+                    if (Math.Abs(actualIndent - requestedIndent) > 0.01)
+                    { throw new WordToolException("READBACK_FAILED", "首行缩进写入后的读回值与请求不一致。"); }
+                    firstLineIndentChars = actualIndent.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
+
+                if (alignmentValue.HasValue) { WordCom.Set(format, "Alignment", alignmentValue.Value); }
+                SetIf(args, "space_before", format, "SpaceBefore");
+                SetIf(args, "space_after", format, "SpaceAfter");
+                SetIf(args, "keep_with_next", format, "KeepWithNext");
+                return ToolResult.Success(new
+                {
+                    story = target.Story,
+                    start = target.Start,
+                    end = target.End,
+                    readback = new
+                    {
+                        alignment = WordCom.String(format, "Alignment"),
+                        firstLineIndentChars,
+                        spaceBefore = WordCom.String(format, "SpaceBefore"),
+                        spaceAfter = WordCom.String(format, "SpaceAfter"),
+                    },
+                    canUndo = false,
+                    undoNote = "段落格式未保存完整快照，不能提供虚假撤销。",
+                });
+            }
             finally { WordCom.Release(format); target?.Dispose(); WordCom.Release(document); }
         }
 

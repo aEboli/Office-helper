@@ -43,6 +43,7 @@ namespace ChatWord.AddIn.Hosts
         internal int Start { get; set; }
         internal int End { get; set; }
         internal string Text { get; set; }
+        internal bool TextIncluded { get; set; } = true;
         internal string ParagraphStyle { get; set; }
         internal int HeadingLevel { get; set; }
         internal int? TableIndex { get; set; }
@@ -52,9 +53,10 @@ namespace ChatWord.AddIn.Hosts
         internal string ToPromptText()
         {
             return HasSelection
-                ? string.Format("当前选区：Story={0}，Start={1}，End={2}，段落样式={3}，标题层级={4}，表格位置={5}，摘要：{6}",
+                ? string.Format("当前选区：Story={0}，Start={1}，End={2}，段落样式={3}，标题层级={4}，表格位置={5}，{6}",
                     Story, Start, End, ParagraphStyle ?? "未知", HeadingLevel, TableIndex.HasValue ?
-                        string.Format("表 {0} 行 {1} 列 {2}", TableIndex, Row, Column) : "不在表格中", Text)
+                        string.Format("表 {0} 行 {1} 列 {2}", TableIndex, Row, Column) : "不在表格中",
+                    TextIncluded ? "摘要：" + Text : "选区文字未纳入上下文")
                 : "当前没有可用选区。";
         }
     }
@@ -77,6 +79,13 @@ namespace ChatWord.AddIn.Hosts
             var application = Application;
             return application == null || !WordCom.TryGet(application, "ActiveDocument", out var document)
                 ? null : document;
+        }
+
+        internal static string DocumentKey(WordDocumentSummary summary)
+        {
+            if (summary == null || !summary.HasDocument) { return null; }
+            var identity = !string.IsNullOrWhiteSpace(summary.Path) ? "path:" + summary.Path : "name:" + summary.Name;
+            return string.IsNullOrWhiteSpace(identity) ? null : identity.Trim().ToUpperInvariant();
         }
 
         internal WordDocumentSummary GetSummary()
@@ -125,7 +134,7 @@ namespace ChatWord.AddIn.Hosts
             finally { WordCom.Release(document); }
         }
 
-        internal WordSelectionInfo GetSelection()
+        internal WordSelectionInfo GetSelection(bool includeText = true)
         {
             object selection = null;
             object paragraph = null;
@@ -138,7 +147,7 @@ namespace ChatWord.AddIn.Hosts
                     return new WordSelectionInfo();
                 }
 
-                var text = Sanitize(WordCom.String(selection, "Text"));
+                var text = includeText ? Sanitize(WordCom.String(selection, "Text")) : string.Empty;
                 var storyType = WordCom.Int(selection, "StoryType");
                 var result = new WordSelectionInfo
                 {
@@ -147,7 +156,8 @@ namespace ChatWord.AddIn.Hosts
                     Story = StoryName(storyType),
                     Start = WordCom.Int(selection, "Start"),
                     End = WordCom.Int(selection, "End"),
-                    Text = Limit(text, 1200),
+                    Text = includeText ? Limit(text, 1200) : string.Empty,
+                    TextIncluded = includeText,
                 };
 
                 if (WordCom.TryGet(selection, "Paragraphs", out paragraphs) && paragraphs != null && WordCom.Int(paragraphs, "Count") > 0)
@@ -185,6 +195,7 @@ namespace ChatWord.AddIn.Hosts
                 document = ActiveDocument();
                 if (document == null) { return new { ok = false, errorCode = "DOCUMENT_REQUIRED", error = "当前没有打开的文档。" }; }
                 var stories = new List<object>();
+                var storyErrors = new List<object>();
                 foreach (var pair in KnownStories)
                 {
                     if (stories.Count >= maxStories) { break; }
@@ -204,13 +215,27 @@ namespace ChatWord.AddIn.Hosts
                             characters = Math.Max(0, WordCom.Int(range, "End") - WordCom.Int(range, "Start")),
                         });
                     }
+                    catch (Exception ex)
+                    {
+                        var cause = ex.GetBaseException();
+                        storyErrors.Add(new
+                        {
+                            story = pair.Value,
+                            storyType = pair.Key,
+                            member = "StoryRanges.Item",
+                            errorCode = cause is MissingMemberException ? "UNSUPPORTED_MEMBER" : "HOST_ERROR",
+                            error = cause.Message,
+                        });
+                    }
                     finally { WordCom.Release(range); WordCom.Release(ranges); }
                 }
                 return new
                 {
                     ok = true,
+                    partial = storyErrors.Count > 0,
                     document = GetSummary(),
                     stories,
+                    storyErrors,
                     bookmarks = Count(document, "Bookmarks"),
                     contentControls = Count(document, "ContentControls"),
                     fields = Count(document, "Fields"),

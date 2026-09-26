@@ -1,4 +1,7 @@
 using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using ChatSheet.AddIn.Providers;
 using ChatSheet.AddIn.Tools;
 using Newtonsoft.Json.Linq;
 
@@ -13,7 +16,7 @@ namespace ChatWord.AddIn.Tools
         private static object Bool(string description) { return new { type = "boolean", description }; }
         private static readonly object Target = new
         {
-            type = "object", description = "明确的 Word 目标；正文、页眉、页脚、脚注和批注必须显式指定 story。",
+            type = "object", description = "明确的 Word 目标；每次只提供一种定位方式。插入光标位置仅传 story、start、end；段落、表格、书签和内容控件定位不要混传，也不要补零值或空字符串。正文、页眉、页脚、脚注和批注必须显式指定 story。",
             properties = new
             {
                 story = Str("main_text、primary_header、primary_footer、footnotes、endnotes 或 comments。"),
@@ -40,14 +43,46 @@ namespace ChatWord.AddIn.Tools
             new ToolDefinition("read_table", "读取指定 Story 内的表格单元格，隐藏单元格结束标记。", ToolRisk.Read, Obj(new { story = Str("Story 名称，默认 main_text。"), table_index = Int("表格索引，从 1 开始。"), offset = Int("行偏移，从 0 开始。"), limit = Int("最多返回行数，默认 50。") }, "table_index")),
             new ToolDefinition("find_text", "在明确 Story/范围内查找文字，不会默认搜索整个文档。", ToolRisk.Read, WithTarget(new { text = Str("要查找的文字。"), match_case = Bool("是否区分大小写。") }, "target", "text")),
             new ToolDefinition("replace_text", "在明确目标范围内替换文字；不提供目标时拒绝执行。", ToolRisk.Write, WithTarget(new { find = Str("要替换的文字；为空时将目标整体替换。"), replace = Str("替换后的文字。") }, "target", "replace")),
-            new ToolDefinition("insert_text", "在明确的折叠或字符范围插入文字。", ToolRisk.Write, WithTarget(new { text = Str("要插入的文字。") }, "target", "text")),
+            new ToolDefinition("insert_text", "在明确的折叠位置插入文字；光标目标只使用 story、start、end。", ToolRisk.Write, WithTarget(new { text = Str("要插入的文字。") }, "target", "text")),
             new ToolDefinition("delete_range", "删除明确目标范围的文字。", ToolRisk.Write, WithTarget(new { } , "target")),
             new ToolDefinition("format_text", "设置明确范围的字符格式。", ToolRisk.Write, WithTarget(new { bold = Bool("是否加粗。"), italic = Bool("是否倾斜。"), underline = Bool("是否下划线。"), font_size = new { type = "number", description = "字号。" } }, "target")),
-            new ToolDefinition("format_paragraph", "设置明确范围所在段落的段前、段后和对齐方式。", ToolRisk.Write, WithTarget(new { alignment = Str("left、center、right 或 justify。"), space_before = new { type = "number" }, space_after = new { type = "number" }, keep_with_next = Bool("是否与下一段同页。") }, "target")),
+            new ToolDefinition("format_paragraph", "设置明确范围所在段落的缩进、段前段后和对齐方式。", ToolRisk.Write, WithTarget(new { alignment = Str("left、center、right 或 justify。"), first_line_indent_chars = new { type = "number", description = "首行缩进字符数；负值表示悬挂缩进。" }, space_before = new { type = "number" }, space_after = new { type = "number" }, keep_with_next = Bool("是否与下一段同页。") }, "target")),
             new ToolDefinition("apply_style", "将明确范围的段落应用现有 Word 样式名称。", ToolRisk.Write, WithTarget(new { style = Str("样式名称，不创建新样式。") }, "target", "style")),
             new ToolDefinition("edit_table", "修改明确表格单元格的显示文本。", ToolRisk.Write, Obj(new { target = Target, table_index = Int("表格索引。"), row = Int("行号。"), column = Int("列号。"), text = Str("单元格新文本。") }, "target", "text")),
             new ToolDefinition("set_page_setup", "修改明确节的页面设置。", ToolRisk.Structure, Obj(new { section_index = Int("节索引，从 1 开始。"), orientation = Str("portrait 或 landscape。"), top_margin = new { type = "number" }, bottom_margin = new { type = "number" }, left_margin = new { type = "number" }, right_margin = new { type = "number" } }, "section_index")),
             new ToolDefinition("insert_page_break", "在明确 Story 位置插入分页符。", ToolRisk.Structure, WithTarget(new { }, "target")),
         };
+
+        internal static string PromptSection(bool textProtocol)
+        {
+            var builder = new StringBuilder();
+            if (textProtocol)
+            {
+                builder.AppendLine("当前连接使用文本工具协议，没有原生函数调用。调用工具时只输出一个信息串为 `" + TextToolProtocol.BlockTag + "` 的围栏代码块，块内使用 `tool` 和 `args` JSON 字段；输出后等待工具结果，不要伪造执行结果。工具块对用户隐藏。");
+                builder.AppendLine("示例：");
+                builder.AppendLine("```" + TextToolProtocol.BlockTag);
+                builder.AppendLine("{\"tool\":\"get_selection\",\"args\":{}}");
+                builder.AppendLine("```");
+            }
+
+            builder.AppendLine("Word 工具清单：");
+            foreach (var tool in All)
+            {
+                var prefix = textProtocol ? "- `" + tool.Name + "(" + ParameterNames(tool) + ")`：" : "- " + tool.Name + "：";
+                builder.AppendLine(prefix + tool.Description);
+            }
+            return builder.ToString().TrimEnd();
+        }
+
+        private static string ParameterNames(ToolDefinition tool)
+        {
+            var schema = JObject.FromObject(tool.Parameters);
+            var properties = schema["properties"] as JObject;
+            if (properties == null) { return string.Empty; }
+            var required = new HashSet<string>((schema["required"] as JArray ?? new JArray())
+                .Select(item => item.Value<string>()).Where(name => !string.IsNullOrEmpty(name)), System.StringComparer.Ordinal);
+            return string.Join(", ", properties.Properties()
+                .Select(property => property.Name + (required.Contains(property.Name) ? string.Empty : "?")));
+        }
     }
 }

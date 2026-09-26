@@ -38,18 +38,18 @@ check(
   formatVersion('preview'),
 );
 
-const node = { dataset: { version: '0.10.3.15' }, textContent: '' };
+const node = { dataset: { version: '0.10.3.16' }, textContent: '' };
 const documentRoot = {
   getElementById: (id) => id === 'app-version' ? node : null,
 };
 check(
   '宿主版本返回后更新标题栏',
-  updateVersionDisplay('0.10.3.15', documentRoot) && node.textContent === '0.10.3.15',
+  updateVersionDisplay('0.10.3.16', documentRoot) && node.textContent === '0.10.3.16',
   node.textContent,
 );
 check(
   '没有宿主版本时使用静态回退',
-  updateVersionDisplay('', documentRoot) && node.textContent === '0.10.3.15',
+  updateVersionDisplay('', documentRoot) && node.textContent === '0.10.3.16',
   node.textContent,
 );
 
@@ -57,7 +57,7 @@ const html = readFileSync(join(webDir, 'index.html'), 'utf8');
 const css = readFileSync(join(webDir, 'styles', 'app.css'), 'utf8');
 check(
   '标题栏包含版本节点和当前回退版本',
-  /id="app-version"[^>]*data-version="0\.10\.3\.15">0\.10\.3\.15<\/span>/.test(html),
+  /id="app-version"[^>]*data-version="0\.10\.3\.16">0\.10\.3\.16<\/span>/.test(html),
 );
 check(
   '版本节点使用清晰的 UI 字体',

@@ -10,7 +10,7 @@
     <AssemblyName>ChatSheet.AddIn</AssemblyName>
     <AssemblyTitle>Office-helper 表格 AI 助手</AssemblyTitle>
     <Product>Office-helper</Product>
-    <Version>0.10.3.15</Version>
+    <Version>0.10.3.16</Version>
     <!-- 只对入口类和窗格类显式开放 COM，不整体导出程序集。 -->
     <ComVisible>false</ComVisible>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>

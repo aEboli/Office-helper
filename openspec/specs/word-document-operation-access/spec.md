@@ -167,3 +167,115 @@ Word 顾问模式 SHALL 明确说明不能读取或修改文档；只有工具�
 
 - **WHEN** 当前模型处于顾问模式并收到修改请求
 - **THEN** 助手 SHALL 只给建议，不声称文档已经修改
+
+### Requirement: 文档起草内容写入当前文档
+
+当用户要求撰写、续写或补充面向当前文档的内容，且存在明确的折叠光标目标时，Word 助手 SHALL 使用 Word 写入工具将生成内容写入该目标，并 SHALL 根据工具读回结果报告状态。该写入 SHALL 遵守当前审批设置、文档保护检查和现有撤销能力。
+
+#### Scenario: 在光标处起草内容
+
+- **WHEN** 用户在 Word 面板要求撰写一段面向当前文档的内容，且当前选区是折叠光标
+- **THEN** 助手 SHALL 将生成内容插入该光标位置
+- **AND THEN** 只有工具读回成功后才可报告文档已更新
+
+#### Scenario: 明确改写选中文字
+
+- **WHEN** 用户明确要求改写当前非空选区
+- **THEN** 助手 SHALL 将选区作为唯一写入目标并替换其内容
+- **AND THEN** 选区外文档内容 SHALL 保持不变
+
+#### Scenario: 起草请求遇到非空选区
+
+- **WHEN** 用户请求新写内容但当前选区非空，且没有明确要求替换该选区
+- **THEN** 助手 SHALL 询问用户是替换选区还是指定其他插入位置
+- **AND THEN** 用户明确目标前文档 SHALL 保持不变
+
+#### Scenario: 不面向文档的普通问答
+
+- **WHEN** 用户提出知识问答、建议或其他不要求写入当前文档的请求
+- **THEN** 助手 SHALL 只在聊天区回答，不得自动修改文档
+
+#### Scenario: 写入目标或写入结果不可确认
+
+- **WHEN** 当前文档目标不明确、文档受保护或写入读回失败
+- **THEN** 助手 SHALL 询问目标或报告具体失败状态
+- **AND THEN** 助手 SHALL NOT 声称文档已成功更新
+
+### Requirement: Word 文档操作提供三种审批模式
+
+Word/WPS Writer 写操作 SHALL 支持与 Excel 相同的 `PerWrite`、`PerTurn` 和 `Automatic` 三种审批模式。读操作 SHALL 自动执行。每轮授权 SHALL 限定在当前文档和单一操作类别，并且只在本轮有效；结构操作 SHALL 与格式、普通写入和删除分开授权。面板 SHALL 显示现存授权并允许收回，运行中更改模式 SHALL 对下一次写操作生效。
+
+#### Scenario: 逐项审批
+
+- **WHEN** 当前模式为 `PerWrite` 且没有适用的本轮授权
+- **THEN** 每个写操作 SHALL 显示审批卡，读操作 SHALL 自动执行
+
+#### Scenario: 每轮同文档同类确认
+
+- **WHEN** 当前模式为 `PerTurn` 且用户批准当前文档的一项写操作
+- **THEN** 本轮同一文档、同一类别的后续操作 SHALL 不再询问
+- **AND THEN** 其他类别和其他文档的操作 SHALL 仍按需询问，结构操作 SHALL 单独授权
+
+#### Scenario: 全自动
+
+- **WHEN** 当前模式为 `Automatic`
+- **THEN** 写操作 SHALL 直接执行，不显示审批卡
+- **AND THEN** 只有工具实际返回快照时才显示撤销入口
+
+#### Scenario: 收回授权及新一轮隔离
+
+- **WHEN** 用户收回本轮授权或开始新一轮任务
+- **THEN** 相应授权 SHALL 被清除
+- **AND THEN** 后续未授权写操作 SHALL 按当前模式重新处理
+
+#### Scenario: 运行中切换模式
+
+- **WHEN** 用户在任务运行期间切换审批模式
+- **THEN** 下一次写操作 SHALL 使用新模式
+
+### Requirement: Word 格式规范由用户明确点名触发
+
+Word 助手 SHALL 仅在用户明确提到文种、格式或标准时应用对应的写作与排版规范。助手 SHALL NOT 仅凭正文语言、文档内容或笼统的美化要求推断书信格式或公文标准。用户点名的格式存在会改变布局的未指定变体时，助手 SHALL 先澄清。格式操作 SHALL 仅针对本轮新增内容或用户明确指定的段落。
+
+#### Scenario: 未点名具体格式
+
+- **WHEN** 用户要求撰写或整理内容，但没有提到文种、格式或标准
+- **THEN** 助手 SHALL 沿用文档现有结构，不得仅按中文或英文自动套用书信或公文格式
+
+#### Scenario: 明确点名中文书信格式
+
+- **WHEN** 用户明确要求按中文一般书信格式撰写或排版
+- **THEN** 助手 SHALL 按中文书信惯例处理称呼、开头、正文、祝颂语、署名和日期，包括称呼另起一行顶格、正文段首常空两字、文末落款
+- **AND THEN** 助手 SHALL 将该惯例描述为通行写法，不得声称其为适用于所有私人书信的统一强制标准
+
+#### Scenario: 明确点名英文商务信函版式
+
+- **WHEN** 用户明确要求英文商务信函的 full block 或 modified block 格式
+- **THEN** 助手 SHALL 只应用被点名的版式及对应对齐、段落缩进规则
+- **AND THEN** full block SHALL 全部左对齐且正文不缩进；modified block SHALL 将日期及结尾签名移至中间位置，并保持正文不缩进、地址及正文左对齐
+- **AND THEN** 助手 SHALL 使用符合收件人关系和正式程度的英文称呼，并在首段自然说明目的，不得逐词翻译中文问候和客套语
+
+#### Scenario: 未指定英文商务信函变体
+
+- **WHEN** 用户要求英文商务信函格式，但未说明 block、modified block 等会改变布局的变体
+- **THEN** 助手 SHALL 先询问所需变体，不得静默选择并重排段落
+
+#### Scenario: 格式目标涉及已有内容
+
+- **WHEN** 格式化目标无法与相邻既有段落分开
+- **THEN** 助手 SHALL 在修改前询问，不得将格式扩展到整篇文档
+
+### Requirement: Word 段落工具支持首行字符缩进
+
+Word `format_paragraph` 工具 SHALL 接受字符单位的 `first_line_indent_chars` 数值参数，并 SHALL 将其写入 Word `ParagraphFormat.CharacterUnitFirstLineIndent`。工具 SHALL 在成功返回前读回并核对该值；宿主不支持该属性或读回不匹配时 SHALL 返回失败状态。
+
+#### Scenario: 设置首行缩进并读回
+
+- **WHEN** 工具收到明确目标和 `first_line_indent_chars` 数值
+- **THEN** 工具 SHALL 按字符单位设置段落首行缩进
+- **AND THEN** 工具 SHALL 返回与请求相符的实际读回值
+
+#### Scenario: 宿主无法支持或确认缩进
+
+- **WHEN** Word/WPS 不支持首行缩进属性或实际读回值与请求不符
+- **THEN** 工具 SHALL 返回明确失败，不得报告格式已成功应用

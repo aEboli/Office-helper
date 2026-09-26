@@ -26,6 +26,10 @@ namespace ChatSheet.ToolTests
                 var executor = new WordToolExecutor(() => application, progId);
                 var info = executor.Execute("get_document_info", new JObject());
                 report(progId + " 读取文档信息", info.Ok, info.Error ?? "读取失败");
+                var structure = executor.Execute("read_document_structure", new JObject());
+                var structureData = structure.Ok ? JObject.FromObject(structure.Data) : new JObject();
+                report(progId + " 读取可用文档结构", structure.Ok && structureData.Value<bool?>("ok") == true,
+                    structure.Error ?? "结构读取失败");
 
                 selection = Get(application, "Selection");
                 Call(selection, "SetRange", 0, 10);
@@ -48,6 +52,21 @@ namespace ChatSheet.ToolTests
                 report(progId + " 修改并读回", replace.Ok && JObject.FromObject(replace.Data).Value<string>("text") != null, replace.Error ?? "修改失败");
                 var undone = executor.Undo.TryUndo("smoke-undo", document, out var undoMessage);
                 report(progId + " 快照撤销", undone, undoMessage);
+
+                var insertion = executor.Execute("insert_text", new JObject
+                {
+                    ["target"] = new JObject
+                    {
+                        ["story"] = "main_text", ["start"] = 0, ["end"] = 0,
+                        ["paragraph_index"] = 0, ["table_index"] = 0, ["row"] = 0, ["column"] = 0,
+                        ["bookmark"] = "", ["content_control"] = "",
+                    },
+                    ["text"] = "smoke insertion",
+                }, "smoke-insert");
+                report(progId + " 折叠光标插入并读回", insertion.Ok &&
+                    JObject.FromObject(insertion.Data).Value<string>("text") == "smoke insertion", insertion.Error ?? "插入失败");
+                var insertionUndone = executor.Undo.TryUndo("smoke-insert", document, out var insertionUndoMessage);
+                report(progId + " 撤销折叠光标插入", insertionUndone, insertionUndoMessage);
                 return 0;
             }
             catch (Exception ex)

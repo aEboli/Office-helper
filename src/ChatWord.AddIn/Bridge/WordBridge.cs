@@ -40,7 +40,7 @@ namespace ChatWord.AddIn.Bridge
             _settings = Settings.Load();
             // WorkBuddy ACP、模型目录和授权操作必须与 Excel 入口走同一套通道。
             // Word 只替换聊天/文档执行器，不能把这些能力退化为空响应。
-            _sharedChannels = new AgentChannels(applicationAccessor, PushAgentUpdateAsync, PushRawAsync, InvokeOnUiAsync, Settings.Load, createAgent: false);
+            _sharedChannels = new AgentChannels(applicationAccessor, PushAgentUpdateAsync, PushRawAsync, InvokeOnUiAsync, Settings.Load, createAgent: false, wordHost: true);
             _agent = new WordAgentRunner(applicationAccessor, "OfficeHelper.Word.AddIn", InvokeOnUiAsync);
             _context = _agent.Tools.Context;
             _sharedChannels.Register(_handlers);
@@ -93,18 +93,39 @@ namespace ChatWord.AddIn.Bridge
             var theme = payload.Value<string>("theme") ?? string.Empty; return Task.FromResult<object>(new { applied = ThemeApplier?.Invoke(theme) == true, theme });
         }
 
-        private Task<object> SendAsync(JObject payload)
+        private async Task<object> SendAsync(JObject payload)
         {
             if (_run != null) { throw new ProviderException("BUSY", "当前已有文档任务正在运行。"); }
             var text = payload.Value<string>("text") ?? string.Empty; var settings = Settings.Load(); _settings = settings; var cts = new CancellationTokenSource(); _run = cts;
-            _ = Task.Run(async () =>
+            try
             {
-                try { await _agent.RunAsync(text, settings, PushAgentUpdateAsync, RequestApprovalAsync, cts.Token).ConfigureAwait(false); }
-                catch (OperationCanceledException) { await PushAgentUpdateAsync(new AgentUpdate { Kind = "stopped", Text = "文档任务已停止。" }).ConfigureAwait(false); }
-                catch (Exception ex) { await PushAgentUpdateAsync(new AgentUpdate { Kind = "error", Text = ex.Message, Payload = new { errorCode = ex is ProviderException p ? p.Code : "WORD_AGENT_ERROR" } }).ConfigureAwait(false); }
-                finally { if (ReferenceEquals(_run, cts)) { _run = null; cts.Dispose(); } }
-            });
-            return Task.FromResult<object>(new { started = true });
+                // chat.js 会一直保持忙碌态，直到本次请求完成。Excel 桥遵守同一协议；
+                // 如果这里立即返回 started，Word 还没收到任何进度事件就会移除处理中气泡。
+                await Task.Run(
+                    () => _agent.RunAsync(text, settings, PushAgentUpdateAsync, RequestApprovalAsync, cts.Token),
+                    cts.Token).ConfigureAwait(false);
+                return new { completed = true };
+            }
+            catch (OperationCanceledException)
+            {
+                await PushAgentUpdateAsync(new AgentUpdate { Kind = "stopped", Text = "文档任务已停止。" }).ConfigureAwait(false);
+                return new { completed = false, stopped = true };
+            }
+            catch (Exception ex)
+            {
+                var errorCode = ex is ProviderException provider ? provider.Code : "WORD_AGENT_ERROR";
+                await PushAgentUpdateAsync(new AgentUpdate
+                {
+                    Kind = "error",
+                    Text = ex.Message,
+                    Payload = new { errorCode },
+                }).ConfigureAwait(false);
+                return new { completed = false, error = ex.Message, code = errorCode };
+            }
+            finally
+            {
+                if (ReferenceEquals(_run, cts)) { _run = null; cts.Dispose(); }
+            }
         }
 
         private object Stop() { try { _run?.Cancel(); } catch { } return new { stopped = true }; }
@@ -124,7 +145,7 @@ namespace ChatWord.AddIn.Bridge
         private Task<object> RespondApprovalAsync(JObject payload)
         {
             var id = payload.Value<string>("id"); if (string.IsNullOrEmpty(id) || !_approvals.TryRemove(id, out var source)) { return Task.FromResult<object>(new { ok = false, message = "审批请求已过期。" }); }
-            source.TrySetResult(new ApprovalDecision { Approved = payload.Value<bool?>("approved") == true, Reason = payload.Value<string>("reason"), ApproveRest = payload.Value<bool?>("approveRest") == true }); return Task.FromResult<object>(new { ok = true });
+            source.TrySetResult(new ApprovalDecision { Approved = payload.Value<bool?>("approved") == true, Reason = payload.Value<string>("reason"), ApproveRest = payload.Value<bool?>("approveRest") == true, ApproveStructureRest = payload.Value<bool?>("approveStructureRest") == true }); return Task.FromResult<object>(new { ok = true });
         }
 
         private async Task<object> UndoAsync(JObject payload)
@@ -147,7 +168,7 @@ namespace ChatWord.AddIn.Bridge
             _settings = Settings.Load();
             if (payload.Value<string>("model") != null) { _settings.Model = payload.Value<string>("model").Trim(); _settings.StampModelConnection(); }
             if (Thinking.TryParse(payload.Value<string>("thinking"), out var thinking)) { _settings.Thinking = thinking; }
-            if (Enum.TryParse(payload.Value<string>("approval"), out ApprovalPolicy approval)) { _settings.Approval = approval; }
+            if (Enum.TryParse(payload.Value<string>("approval"), out ApprovalPolicy approval)) { _settings.Approval = approval; _agent.UpdateApprovalPolicy(approval); }
             _settings.Save();
             _sharedChannels.ReloadSettings();
             return Task.FromResult<object>(new { model = _settings.Model, thinking = _settings.Thinking.ToString(), approval = _settings.Approval.ToString(), thinkingSupported = true });

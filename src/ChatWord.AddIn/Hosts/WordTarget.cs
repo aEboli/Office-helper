@@ -43,8 +43,8 @@ namespace ChatWord.AddIn.Hosts
             var hasParagraph = target.Value<int?>("paragraph_index").GetValueOrDefault() != 0;
             var hasTable = target.Value<int?>("table_index").GetValueOrDefault() != 0 ||
                 target.Value<int?>("row").GetValueOrDefault() != 0 || target.Value<int?>("column").GetValueOrDefault() != 0;
-            var hasBookmark = target["bookmark"] != null;
-            var hasContentControl = target["content_control"] != null;
+            var hasBookmark = !string.IsNullOrWhiteSpace(target.Value<string>("bookmark"));
+            var hasContentControl = !string.IsNullOrWhiteSpace(target.Value<string>("content_control"));
             var hasOtherLocator = hasParagraph || hasTable || hasBookmark || hasContentControl;
             var hasRange = hasRangeFields &&
                 (target.Value<int?>("start").GetValueOrDefault() != 0 || target.Value<int?>("end").GetValueOrDefault() != 0 || (!hasOtherLocator && !allowStoryOnly));

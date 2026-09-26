@@ -8,11 +8,11 @@ Office-helper 是产品显示名；Excel 入口继续保留 `ChatSheet.AddIn` �
 
 Windows COM 加载项 · WebView2 面板 · 流式对话 · 可审阅的 Excel/Word 工具
 
-[![Latest release](https://img.shields.io/github/v/release/aEboli/ChatSheet?display_name=tag&sort=semver)](https://github.com/aEboli/ChatSheet/releases)
+[![Latest release](https://img.shields.io/github/v/release/aEboli/Office-helper?display_name=tag&sort=semver)](https://github.com/aEboli/Office-helper/releases)
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows&logoColor=white)](#安装)
 [![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4?logo=dotnet&logoColor=white)](#从源码构建)
 
-[下载 v0.10.3.15](https://github.com/aEboli/ChatSheet/releases/tag/v0.10.3.15) · [发行说明](docs/releases/v0.10.3.15.md) · [提交问题](https://github.com/aEboli/ChatSheet/issues)
+[下载 v0.10.3.16](https://github.com/aEboli/Office-helper/releases/tag/v0.10.3.16) · [发行说明](docs/releases/v0.10.3.16.md) · [提交问题](https://github.com/aEboli/Office-helper/issues)
 
 </div>
 
@@ -21,7 +21,7 @@ Windows COM 加载项 · WebView2 面板 · 流式对话 · 可审阅的 Excel/W
 
 ## 先看这里
 
-Office-helper 在 Excel/WPS 表格中读取当前工作簿和选区，在 Word/WPS Writer 中读取当前文档和明确 Story 目标，再通过对应工具完成分析与修改。当前源码版本 0.10.3.15 默认全自动执行，操作卡片报告实际结果；仍可在设置中主动选择逐项或每轮审批。Excel 与 Word 入口统一显示为 Office-helper，旧 ChatSheet ProgID/CLSID 仅用于兼容已有安装。
+Office-helper 在 Excel/WPS 表格中读取当前工作簿和选区，在 Word/WPS Writer 中读取当前文档和明确 Story 目标，再通过对应工具完成分析与修改。当前源码版本 0.10.3.16 默认全自动执行，操作卡片报告实际结果；仍可在设置中主动选择逐项或每轮审批。Excel 与 Word 入口统一显示为 Office-helper，旧 ChatSheet ProgID/CLSID 仅用于兼容已有安装。
 
 ~~~text
 选区 / 工作簿 → 模型理解上下文 → 表格工具执行 → 操作卡片与结果核验
@@ -41,16 +41,32 @@ Office-helper 在 Excel/WPS 表格中读取当前工作簿和选区，在 Word/W
 | 图片与附件 | PNG、JPEG、WebP 图片和文本附件 | 限制数量与大小，拒绝二进制文件 |
 | 模型接入 | OpenAI、Anthropic、Gemini、兼容网关、本机 CLI、WorkBuddy | API Key 用 Windows DPAPI 保护 |
 
+### Word 文档编辑
+
+起草内容写入当前光标；改写时替换明确选区。若非空选区、Story 或段落范围不清楚，会先询问。发送请求会等待整轮文档任务结束，完成或停止后再更新状态；写入结果会读回核对，只有能创建可靠快照时才提供撤销。
+
+### Word 信函格式
+
+格式规范只在用户明确提到文种、版式或标准时应用；只使用中文或英文，不会触发格式推断。文档已有结构会保留，格式变体不明确时先询问。
+
+| 用户点名的格式 | 常见排版约定 | 称呼与开场 |
+| --- | --- | --- |
+| 中文一般书信 | 称呼顶格；正文另起段并首行缩进两字；祝颂语、署名和日期置于文末，落款通常靠右。一般书信通常没有居中标题；这属于常见惯例，不是统一强制标准。 | 称呼可按关系使用“尊敬的”“亲爱的”等表达；称呼行通常以中文冒号收尾，问候或正文另起段。 |
+| 英文商务信函 full block | 各部分左对齐，正文不缩进，以空行分段。 | 常用 Dear 加合适称谓或姓名；首段自然说明写信目的。 |
+| 英文商务信函 modified block | 正文仍左对齐且不缩进；日期及结尾敬语、署名移至页面中部附近。 | 称呼和开场遵循英文商务语境，不逐词翻译“您好”“冒昧打扰”等中文表达。 |
+
+Word 段落工具以字符为单位设置首行缩进，并读回检查实际值；不会用空格模拟缩进。标题居中、落款右对齐等细节只在被点名的格式要求下应用，且只处理本轮新增或明确指定的段落。
+
 ## 安装
 
 ### 预构建 Windows ZIP（推荐）
 
-1. 下载 [`ChatSheet-v0.10.3.15-win.zip`](https://github.com/aEboli/ChatSheet/releases/download/v0.10.3.15/ChatSheet-v0.10.3.15-win.zip) 和同名 `.sha256` 文件。
+1. 下载 [`ChatSheet-v0.10.3.16-win.zip`](https://github.com/aEboli/Office-helper/releases/download/v0.10.3.16/ChatSheet-v0.10.3.16-win.zip) 和同名 `.sha256` 文件。
 2. 在 PowerShell 中核对哈希：
 
    ~~~powershell
-   Get-FileHash -Algorithm SHA256 .\ChatSheet-v0.10.3.15-win.zip
-   Get-Content .\ChatSheet-v0.10.3.15-win.zip.sha256
+   Get-FileHash -Algorithm SHA256 .\ChatSheet-v0.10.3.16-win.zip
+   Get-Content .\ChatSheet-v0.10.3.16-win.zip.sha256
    ~~~
 
 3. 完整解压 ZIP，双击根目录 `install.bat`，选择安装或更新。
@@ -106,25 +122,25 @@ Get-ChildItem tests\web\*.test.mjs | ForEach-Object { node $_.FullName }
 
 ## 文档
 
-- [v0.10.3.15 发行说明](docs/releases/v0.10.3.15.md)
+- [v0.10.3.16 发行说明](docs/releases/v0.10.3.16.md)
 - [Windows 发行包安装、校验与卸载](docs/windows-release-install.md)
 - [架构说明与常见宿主陷阱](docs/architecture.md)
-- [全部 GitHub Releases](https://github.com/aEboli/ChatSheet/releases)
-- [问题反馈](https://github.com/aEboli/ChatSheet/issues)
+- [全部 GitHub Releases](https://github.com/aEboli/Office-helper/releases)
+- [问题反馈](https://github.com/aEboli/Office-helper/issues)
 
 ## 许可证
 
-本仓库目前没有附带许可证。公开可见不等于授予复制、修改或分发权限；如需复用，请先与维护者确认许可证安排。
+GitHub 仓库目前为公开状态，但尚未附带许可证。公开可见不等于授予复制、修改或分发权限；如需复用，请先与维护者确认许可证安排。
 
 
 ## 一键安装与 macOS 边界
 
 Windows 用户可以运行：
 
-    irm https://raw.githubusercontent.com/aEboli/ChatSheet/main/scripts/install-online.ps1 | iex
+    irm https://raw.githubusercontent.com/aEboli/Office-helper/main/scripts/install-online.ps1 | iex
 
 安装器会从 GitHub Release 下载 ZIP 和 SHA-256 sidecar，校验一致后再调用本地安装脚本。也可以下载 ZIP 后双击根目录的 install.bat，菜单提供安装、卸载和诊断。
 
-当前版本是 Windows COM 加载项，依赖 Excel for Windows、.NET Framework 4.8 和 WebView2，不能安装到 Excel for Mac。仓库提供 install.command 和 scripts/install-macos.sh 作为一键兼容性检查；它不会修改 macOS 或伪装成已安装。macOS 原生支持需要 Office.js 加载项和跨平台本地服务，尚未包含在 v0.10.3.15。
+当前版本是 Windows COM 加载项，依赖 Excel for Windows、.NET Framework 4.8 和 WebView2，不能安装到 Excel for Mac。仓库提供 install.command 和 scripts/install-macos.sh 作为一键兼容性检查；它不会修改 macOS 或伪装成已安装。macOS 原生支持需要 Office.js 加载项和跨平台本地服务，尚未包含在 v0.10.3.16。
 
 - [macOS 安装边界](docs/macos-install.md)

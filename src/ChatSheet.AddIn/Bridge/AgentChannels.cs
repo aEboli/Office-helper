@@ -31,6 +31,7 @@ namespace ChatSheet.AddIn.Bridge
         /// </summary>
         private readonly Func<Func<object>, Task<object>> _uiInvoker;
         private readonly Func<Settings> _loadSettings;
+        private readonly bool _wordHost;
 
         private readonly ConcurrentDictionary<string, TaskCompletionSource<ApprovalDecision>> _pendingApprovals =
             new ConcurrentDictionary<string, TaskCompletionSource<ApprovalDecision>>(StringComparer.Ordinal);
@@ -78,7 +79,8 @@ namespace ChatSheet.AddIn.Bridge
             Func<object, Task> pushRaw,
             Func<Func<object>, Task<object>> uiInvoker,
             Func<Settings> loadSettings = null,
-            bool createAgent = true)
+            bool createAgent = true,
+            bool wordHost = false)
         {
             if (applicationAccessor == null)
             {
@@ -92,6 +94,7 @@ namespace ChatSheet.AddIn.Bridge
             _pushRaw = pushRaw;
             _uiInvoker = uiInvoker ?? (work => Task.FromResult(work()));
             _loadSettings = loadSettings ?? Settings.Load;
+            _wordHost = wordHost;
             _settings = _loadSettings();
         }
 
@@ -1160,7 +1163,7 @@ namespace ChatSheet.AddIn.Bridge
                 thinkingOptions = ThinkingOptions(),
                 // 当前协议实际支持的档位，界面据此标注哪些会被降级。
                 thinkingSupported = Thinking.SupportedLevels(EffectiveProtocol(settings)),
-                approvalOptions = ApprovalOptions(),
+                approvalOptions = ApprovalOptions(_wordHost),
                 toolProtocolOptions = ToolProtocolOptions(),
             };
         }
@@ -1447,13 +1450,13 @@ namespace ChatSheet.AddIn.Bridge
             return list;
         }
 
-        private static object ApprovalOptions()
+        private static object ApprovalOptions(bool wordHost)
         {
             return new[]
             {
                 new { id = "PerWrite", label = "逐项审批", hint = "写操作逐项确认，读操作自动执行" },
-                new { id = "PerTurn", label = "每轮确认", hint = "本轮第一次写操作问一次，之后同一工作表同一类不再问；结构单独问" },
-                new { id = "Automatic", label = "全自动", hint = "不询问，依赖 Excel 撤销兜底" },
+                new { id = "PerTurn", label = "每轮确认", hint = wordHost ? "本轮当前文档每类操作首次确认，后续同类不再问；结构单独确认" : "本轮第一次写操作问一次，之后同一工作表同一类不再问；结构单独问" },
+                new { id = "Automatic", label = "全自动", hint = wordHost ? "写操作直接执行；仅工具提供真实快照时可撤销" : "不询问，依赖 Excel 撤销兜底" },
             };
         }
 
