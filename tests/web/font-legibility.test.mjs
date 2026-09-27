@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
-const css = readFileSync(join(here, '..', '..', 'src', 'web', 'styles', 'app.css'), 'utf8');
+const css = readFileSync(join(here, '..', '..', 'src', 'web', 'styles', 'app.css'), 'utf8')
+  .replace(/\r\n/g, '\n');
 
 let passed = 0;
 let failed = 0;

@@ -69,6 +69,9 @@ namespace ChatWord.AddIn.Bridge
             _handlers["chat.reset"] = _ => { _agent.Reset(); return Task.FromResult<object>(new { reset = true }); };
             _handlers["approval.respond"] = RespondApprovalAsync;
             _handlers["approval.revoke"] = _ => Task.FromResult<object>(new { ok = true, revoked = _agent.RevokeApprovalGrants() });
+            _handlers["draft.insert"] = InsertDraftAsync;
+            _handlers["draft.style"] = UpdateDraftStyleAsync;
+            _handlers["draft.discard"] = DiscardDraftAsync;
             _handlers["context.state"] = _ => Task.FromResult<object>(new { used = _agent.Conversation.EstimateTotalTokens(), budget = Math.Max(1, _settings.ContextBudgetTokens), ratio = 0.0, percent = 0, threshold = 85, nearLimit = false });
             _handlers["context.compact"] = _ => Task.FromResult<object>(new { trimmed = false, before = _agent.Conversation.EstimateTotalTokens(), after = _agent.Conversation.EstimateTotalTokens(), compressed = 0, dropped = 0, budget = _settings.ContextBudgetTokens });
             _handlers["session.update"] = UpdateSessionAsync;
@@ -95,14 +98,13 @@ namespace ChatWord.AddIn.Bridge
 
         private async Task<object> SendAsync(JObject payload)
         {
-            if (_run != null) { throw new ProviderException("BUSY", "当前已有文档任务正在运行。"); }
-            var text = payload.Value<string>("text") ?? string.Empty; var settings = Settings.Load(); _settings = settings; var cts = new CancellationTokenSource(); _run = cts;
+            var text = payload.Value<string>("text") ?? string.Empty; var settings = Settings.Load(); _settings = settings; var cts = BeginRun();
             try
             {
                 // chat.js 会一直保持忙碌态，直到本次请求完成。Excel 桥遵守同一协议；
                 // 如果这里立即返回 started，Word 还没收到任何进度事件就会移除处理中气泡。
                 await Task.Run(
-                    () => _agent.RunAsync(text, settings, PushAgentUpdateAsync, RequestApprovalAsync, cts.Token),
+                    () => _agent.RunAsync(text, settings, PushAgentUpdateAsync, RequestApprovalAsync, cts.Token, payload.Value<string>("draftId")),
                     cts.Token).ConfigureAwait(false);
                 return new { completed = true };
             }
@@ -124,11 +126,60 @@ namespace ChatWord.AddIn.Bridge
             }
             finally
             {
-                if (ReferenceEquals(_run, cts)) { _run = null; cts.Dispose(); }
+                EndRun(cts);
             }
         }
 
-        private object Stop() { try { _run?.Cancel(); } catch { } return new { stopped = true }; }
+        private object Stop() { try { Volatile.Read(ref _run)?.Cancel(); } catch { } return new { stopped = true }; }
+
+        private async Task<object> InsertDraftAsync(JObject payload)
+        {
+            var settings = Settings.Load();
+            var cts = BeginRun();
+            try
+            {
+                var result = await _agent.InsertDraftAsync(payload.Value<string>("id"), settings, PushAgentUpdateAsync,
+                    RequestApprovalAsync, cts.Token).ConfigureAwait(false);
+                return DraftResult(result);
+            }
+            finally
+            {
+                EndRun(cts);
+            }
+        }
+
+        private async Task<object> UpdateDraftStyleAsync(JObject payload)
+        {
+            if (Volatile.Read(ref _run) != null) { throw new ProviderException("BUSY", "文档任务完成后才能调整草稿风格。"); }
+            var result = await _agent.UpdateDraftStyleAsync(payload.Value<string>("id"), payload.Value<string>("style"),
+                PushAgentUpdateAsync).ConfigureAwait(false);
+            return DraftResult(result);
+        }
+
+        private async Task<object> DiscardDraftAsync(JObject payload)
+        {
+            if (Volatile.Read(ref _run) != null) { throw new ProviderException("BUSY", "文档任务完成后才能丢弃草稿。"); }
+            var result = await _agent.DiscardDraftAsync(payload.Value<string>("id"), PushAgentUpdateAsync).ConfigureAwait(false);
+            return DraftResult(result);
+        }
+
+        private static object DraftResult(ToolResult result)
+        {
+            return new { ok = result.Ok, message = result.Error, errorCode = result.ErrorCode, data = result.Data };
+        }
+
+        private CancellationTokenSource BeginRun()
+        {
+            var cts = new CancellationTokenSource();
+            if (Interlocked.CompareExchange(ref _run, cts, null) == null) { return cts; }
+            cts.Dispose();
+            throw new ProviderException("BUSY", "当前已有文档任务正在运行。");
+        }
+
+        private void EndRun(CancellationTokenSource cts)
+        {
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _run, null, cts), cts)) { cts.Dispose(); }
+        }
 
         private Task<ApprovalDecision> RequestApprovalAsync(ToolDefinition definition, JObject args, ImpactEstimate impact)
         {

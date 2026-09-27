@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using ChatSheet.AddIn;
 using Newtonsoft.Json.Linq;
@@ -23,6 +25,7 @@ namespace ChatWord.AddIn.Hosts
         internal int ProtectionType { get; set; }
         internal bool TrackRevisions { get; set; }
         internal object Capabilities { get; set; }
+        internal string DocumentIdentity { get; set; }
 
         internal string ToPromptText()
         {
@@ -49,6 +52,7 @@ namespace ChatWord.AddIn.Hosts
         internal int? TableIndex { get; set; }
         internal int? Row { get; set; }
         internal int? Column { get; set; }
+        internal string TextFingerprint { get; set; }
 
         internal string ToPromptText()
         {
@@ -85,6 +89,7 @@ namespace ChatWord.AddIn.Hosts
         {
             if (summary == null || !summary.HasDocument) { return null; }
             var identity = !string.IsNullOrWhiteSpace(summary.Path) ? "path:" + summary.Path : "name:" + summary.Name;
+            if (!string.IsNullOrWhiteSpace(summary.DocumentIdentity)) { identity += "|com:" + summary.DocumentIdentity; }
             return string.IsNullOrWhiteSpace(identity) ? null : identity.Trim().ToUpperInvariant();
         }
 
@@ -127,6 +132,7 @@ namespace ChatWord.AddIn.Hosts
                     ProtectionType = WordCom.Int(document, "ProtectionType", -1),
                     TrackRevisions = WordCom.Bool(document, "TrackRevisions"),
                     Capabilities = CapabilityPayload(document),
+                    DocumentIdentity = ComIdentity(document),
                 };
                 WordCom.Release(paragraphCollection); WordCom.Release(tableCollection); WordCom.Release(sectionCollection);
                 return summary;
@@ -147,7 +153,8 @@ namespace ChatWord.AddIn.Hosts
                     return new WordSelectionInfo();
                 }
 
-                var text = includeText ? Sanitize(WordCom.String(selection, "Text")) : string.Empty;
+                var rawText = WordCom.String(selection, "Text");
+                var text = includeText ? Sanitize(rawText) : string.Empty;
                 var storyType = WordCom.Int(selection, "StoryType");
                 var result = new WordSelectionInfo
                 {
@@ -158,6 +165,7 @@ namespace ChatWord.AddIn.Hosts
                     End = WordCom.Int(selection, "End"),
                     Text = includeText ? Limit(text, 1200) : string.Empty,
                     TextIncluded = includeText,
+                    TextFingerprint = Fingerprint(rawText),
                 };
 
                 if (WordCom.TryGet(selection, "Paragraphs", out paragraphs) && paragraphs != null && WordCom.Int(paragraphs, "Count") > 0)
@@ -258,6 +266,22 @@ namespace ChatWord.AddIn.Hosts
         {
             if (string.IsNullOrEmpty(value)) { return string.Empty; }
             return value.Replace("\a", string.Empty).Replace("\r", "\n").TrimEnd('\n');
+        }
+
+        private static string ComIdentity(object document)
+        {
+            if (document == null || !Marshal.IsComObject(document)) { return null; }
+            var pointer = Marshal.GetIUnknownForObject(document);
+            try { return pointer.ToInt64().ToString("X"); }
+            finally { Marshal.Release(pointer); }
+        }
+
+        private static string Fingerprint(string value)
+        {
+            using (var hash = SHA256.Create())
+            {
+                return Convert.ToBase64String(hash.ComputeHash(Encoding.UTF8.GetBytes(value ?? string.Empty)));
+            }
         }
 
         internal static string Limit(string value, int max)

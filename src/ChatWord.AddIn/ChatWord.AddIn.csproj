@@ -8,7 +8,7 @@
     <AssemblyName>ChatWord.AddIn</AssemblyName>
     <AssemblyTitle>Office-helper 文档助手</AssemblyTitle>
     <Product>Office-helper</Product>
-    <Version>0.10.3.16</Version>
+    <Version>0.10.3.17</Version>
     <ComVisible>false</ComVisible>
     <RegisterForComInterop>false</RegisterForComInterop>
     <EnableDefaultNoneItems>false</EnableDefaultNoneItems>

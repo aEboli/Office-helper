@@ -184,14 +184,13 @@ namespace ChatSheet.AddIn.Providers
         }
 
         /// <summary>
-        /// 正文是否在推辞「我碰不到你的表格」。
+        /// 正文是否明确表示不具备工具能力，或推辞「我碰不到你的表格」。
         ///
-        /// 这是不带原生工具能力的模型最常见的表现：服务端收下了工具声明、
-        /// 不报任何错，模型却一个调用都不发，只回一句自己做不到
-        /// （实测见 DeepSeek-V4-Flash）。此时唯一的信号就是这句话本身。
+        /// 服务端可能收下工具声明、不报任何错，模型却一个调用都不发。
+        /// 直接说「我没有工具调用能力」也是能力信号，不必再要求它提到表格。
         ///
-        /// 刻意只认「碰不到工作簿」这一类说法，不认泛泛的「我不能」：
-        /// 模型拒绝越权请求也会说「我不能」，那是对的，不该触发降级。
+        /// 普通的「我不能」仍不足以触发降级：模型拒绝越权请求也会这么说，
+        /// 那是正确行为，不该因此切换协议。
         /// </summary>
         internal static bool LooksLikeToolRefusal(string assistantText)
         {
@@ -200,8 +199,53 @@ namespace ChatSheet.AddIn.Providers
                 return false;
             }
 
-            // 先要出现「做不到」的意思，再要求它谈的是表格。
-            // 两者缺一都不算：只提表格是正常作答，只说不能可能是合理拒绝。
+            if (Mentions(
+                assistantText,
+                "不支持工具调用",
+                "不支持函数调用",
+                "不支持调用工具",
+                "不支持调用函数",
+                "不具备工具调用能力",
+                "不具备工具调用的能力",
+                "不具备调用工具的能力",
+                "没有工具调用能力",
+                "没有工具调用的能力",
+                "没有调用工具的能力",
+                "无法进行工具调用",
+                "不能进行工具调用",
+                "无法调用工具",
+                "不能调用工具",
+                "工具调用不受支持",
+                "函数调用不受支持",
+                "tool calling is not supported",
+                "function calling is not supported",
+                "tool calls are not supported",
+                "does not support tool calling",
+                "doesn't support tool calling",
+                "do not support tool calling",
+                "don't support tool calling",
+                "does not support function calling",
+                "doesn't support function calling",
+                "cannot call tools",
+                "can't call tools",
+                "unable to call tools",
+                "cannot invoke tools",
+                "can't invoke tools",
+                "unable to invoke tools",
+                "do not have the ability to call tools",
+                "don't have the ability to call tools",
+                "do not have tool calling capability",
+                "don't have tool calling capability",
+                "do not have tool-calling capability",
+                "don't have tool-calling capability",
+                "tool calling is unavailable",
+                "function calling is unavailable",
+                "tool calls are unavailable"))
+            {
+                return true;
+            }
+
+            // 兼容旧有表述：先要出现「做不到」，再要求它谈到工作簿。
             var deniesAbility = Mentions(
                 assistantText,
                 "无法访问",

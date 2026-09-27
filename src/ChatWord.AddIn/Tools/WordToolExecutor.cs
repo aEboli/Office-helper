@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text;
 using ChatSheet.AddIn.Tools;
+using ChatWord.AddIn.Agent;
 using ChatWord.AddIn.Hosts;
 using Newtonsoft.Json.Linq;
 
@@ -44,6 +47,13 @@ namespace ChatWord.AddIn.Tools
                         var find = args?.Value<string>("find"); var replace = args?.Value<string>("replace") ?? string.Empty;
                         after = string.IsNullOrEmpty(find) ? replace : before.Replace(find, replace); break;
                     case "insert_text": after = args?.Value<string>("text") ?? string.Empty; break;
+                    case "insert_document_draft":
+                        VerifyDraftVersion(args);
+                        VerifyDraftTarget(args, target);
+                        var draftBlocks = WordDocumentDraft.ParseBlocks(args?["blocks"] as JArray);
+                        EnsureDraftElementsSupported(document, args, target, draftBlocks);
+                        after = string.Join("\n", draftBlocks.Select(block => block.PlainText()));
+                        break;
                     case "delete_range": after = string.Empty; break;
                     case "edit_table": after = args?.Value<string>("text") ?? string.Empty; break;
                     default: return new { supported = false, target = target.Label, note = "该操作不是文本替换，执行后将通过宿主读回实际格式或结构。" };
@@ -74,6 +84,7 @@ namespace ChatWord.AddIn.Tools
                     case "find_text": return FindText(args);
                     case "replace_text": return ReplaceText(args, undoId);
                     case "insert_text": return InsertText(args, undoId);
+                    case "insert_document_draft": return InsertDocumentDraft(args);
                     case "delete_range": return DeleteRange(args, undoId);
                     case "format_text": return FormatText(args);
                     case "format_paragraph": return FormatParagraph(args);
@@ -191,6 +202,324 @@ namespace ChatWord.AddIn.Tools
                 return WriteText(document, target, before, expected, undoId);
             }
             finally { target?.Dispose(); WordCom.Release(document); }
+        }
+
+        private ToolResult InsertDocumentDraft(JObject args)
+        {
+            object document = null;
+            WordTarget target = null;
+            var modified = false;
+            var before = string.Empty;
+            var originalStart = 0;
+            var fullText = string.Empty;
+            var tableLengthDelta = 0;
+            try
+            {
+                document = ActiveDocument();
+                VerifyDraftVersion(args);
+                target = WordTargetResolver.Resolve(document, args);
+                EnsureWritable(document);
+                VerifyDraftTarget(args, target);
+                var blocks = WordDocumentDraft.ParseBlocks(args?["blocks"] as JArray);
+                EnsureDraftElementsSupported(document, args, target, blocks);
+                var operation = args?.Value<string>("operation");
+                if (operation != "insert" && operation != "replace")
+                { throw new WordToolException("DRAFT_INVALID", "草稿操作必须是 insert 或 replace。"); }
+                if ((operation == "insert") != target.IsCollapsed)
+                { throw new WordToolException("TARGET_INVALID", "草稿操作与当前选区不匹配。"); }
+
+                before = SafeTextTarget(target);
+                originalStart = target.Start;
+                var spans = ComposeDraftText(blocks, out fullText);
+                WordCom.Set(target.Range, "Text", fullText);
+                modified = true;
+
+                for (var i = spans.Count - 1; i >= 0; i--)
+                {
+                    var span = spans[i];
+                    var start = originalStart + span.Start;
+                    var end = originalStart + span.End;
+                    if (span.Block.Type == "table")
+                    {
+                        object tableTextRange = null;
+                        object table = null;
+                        object tableRange = null;
+                        try
+                        {
+                            tableTextRange = WordCom.Call(document, "Range", start, originalStart + span.End + 1);
+                            table = WordCom.Call(tableTextRange, "ConvertToTable", "\t", span.Block.Rows.Count + 1, span.Block.Headers.Count);
+                            tableRange = WordCom.Get(table, "Range");
+                            tableLengthDelta += WordCom.Int(tableRange, "End") - WordCom.Int(tableRange, "Start") - (span.End - span.Start + 1);
+                            ApplyDraftTableStyle(table, args.Value<string>("style"));
+                            VerifyDraftTable(table, span.Block);
+                        }
+                        finally { WordCom.Release(tableRange); WordCom.Release(table); WordCom.Release(tableTextRange); }
+                        continue;
+                    }
+
+                    object blockRange = null;
+                    try
+                    {
+                        blockRange = WordCom.Call(document, "Range", start, end);
+                        ApplyDraftParagraphStyle(document, blockRange, span.Block, args.Value<string>("style"));
+                        if (span.Block.Type == "bullets" || span.Block.Type == "numbered")
+                        {
+                            object listFormat = null;
+                            try
+                            {
+                                listFormat = WordCom.Get(blockRange, "ListFormat");
+                                WordCom.Call(listFormat, span.Block.Type == "bullets" ? "ApplyBulletDefault" : "ApplyNumberDefault");
+                            }
+                            finally { WordCom.Release(listFormat); }
+                        }
+                        else
+                        {
+                            ApplyDraftRuns(document, blockRange, span.Block, start);
+                            var actual = WordDocumentContext.Sanitize(WordCom.String(blockRange, "Text"));
+                            if (!TextMatches(actual, span.Block.PlainText()))
+                            { throw new WordToolException("READBACK_FAILED", "草稿段落读回与预期不一致。"); }
+                        }
+                    }
+                    finally { WordCom.Release(blockRange); }
+                }
+
+                var finalEnd = originalStart + fullText.Length + tableLengthDelta;
+                WordCom.Call(target.Range, "SetRange", originalStart, finalEnd);
+                target.End = finalEnd;
+                var actualText = WordCom.String(target.Range, "Text");
+                return ToolResult.Success(new
+                {
+                    draft_id = args.Value<string>("draft_id"), operation,
+                    story = target.Story, start = originalStart, end = finalEnd,
+                    text = WordDocumentContext.Sanitize(actualText),
+                    canUndo = false, undoId = (string)null,
+                    undoNote = "结构化草稿可能包含段落样式、列表或表格；当前文本快照不能可靠恢复这些格式，因此面板不提供撤销。",
+                });
+            }
+            catch (Exception ex)
+            {
+                var errorCode = ex is WordToolException wordError ? wordError.Code : MapErrorCode(ex);
+                var message = ex.Message;
+                if (modified && target != null)
+                {
+                    try
+                    {
+                        WordCom.Set(target.Range, "Text", before);
+                        var restored = WordCom.String(target.Range, "Text");
+                        if (TextMatches(restored, before))
+                        { message += " 草稿未完整应用，原目标文本已恢复。"; }
+                        else
+                        { errorCode = "DRAFT_PARTIAL_WRITE"; message += " 尝试恢复原文后读回仍不一致，请检查当前文档。"; }
+                    }
+                    catch (Exception rollbackError)
+                    {
+                        errorCode = "DRAFT_PARTIAL_WRITE";
+                        message += " 无法确认已恢复原文，请检查当前文档：" + rollbackError.Message;
+                    }
+                }
+                return ToolResult.Failure(errorCode, message);
+            }
+            finally { target?.Dispose(); WordCom.Release(document); }
+        }
+
+        private void VerifyDraftTarget(JObject args, WordTarget target)
+        {
+            var expectedDocumentKey = args?.Value<string>("document_key");
+            if (!string.Equals(expectedDocumentKey, WordDocumentContext.DocumentKey(_context.GetSummary()), StringComparison.Ordinal))
+            { throw new WordToolException("DOCUMENT_CHANGED", "草稿关联的文档已切换；请在原文档重新选择目标。"); }
+
+            var targetArgs = args?["target"] as JObject;
+            var selection = _context.GetSelection();
+            if (selection == null || !selection.HasSelection ||
+                !string.Equals(selection.Story, target.Story, StringComparison.OrdinalIgnoreCase) ||
+                selection.Start != target.Start || selection.End != target.End ||
+                string.IsNullOrWhiteSpace(targetArgs?.Value<string>("fingerprint")) ||
+                !string.Equals(selection.TextFingerprint, targetArgs.Value<string>("fingerprint"), StringComparison.Ordinal))
+            { throw new WordToolException("DRAFT_TARGET_CHANGED", "草稿原选区已变化；请重新选择原目标后再确认插入。"); }
+        }
+
+        private static void VerifyDraftVersion(JObject args)
+        {
+            if (args?.Value<int?>("version") != WordDocumentDraft.CurrentVersion)
+            { throw new WordToolException("DRAFT_VERSION_UNSUPPORTED", "草稿版本不受当前 Word/WPS Writer 插入器支持。"); }
+        }
+
+        private static void EnsureDraftElementsSupported(object document, JObject args, WordTarget target, IList<WordDraftBlock> blocks)
+        {
+            var style = args?.Value<string>("style") ?? "follow_document";
+            if (!WordDocumentDraft.IsStyle(style)) { throw new WordToolException("DRAFT_STYLE_INVALID", "草稿风格无效。"); }
+            var hasTable = blocks.Any(block => block.Type == "table");
+            if (hasTable && (!string.Equals(target.Story, "main_text", StringComparison.OrdinalIgnoreCase) || target.TableIndex.HasValue))
+            { throw new WordToolException("STRUCTURE_UNSUPPORTED", "表格草稿只能插入正文中的非表格位置。"); }
+
+            object styles = null;
+            try
+            {
+                styles = WordCom.Get(document, "Styles");
+                foreach (var block in blocks)
+                {
+                    var styleId = BuiltInStyleId(block);
+                    if (!styleId.HasValue) { continue; }
+                    object builtInStyle = null;
+                    try
+                    {
+                        builtInStyle = WordCom.Item(styles, styleId.Value);
+                        if (builtInStyle == null)
+                        { throw new WordToolException("UNSUPPORTED_STYLE", "当前宿主缺少草稿需要的内置样式。"); }
+                    }
+                    finally { WordCom.Release(builtInStyle); }
+                }
+            }
+            finally { WordCom.Release(styles); }
+        }
+
+        private static List<WordDraftBlockSpan> ComposeDraftText(IList<WordDraftBlock> blocks, out string text)
+        {
+            var builder = new StringBuilder();
+            var spans = new List<WordDraftBlockSpan>();
+            foreach (var block in blocks)
+            {
+                var blockText = block.PlainText().Replace("\n", "\r");
+                var start = builder.Length;
+                builder.Append(blockText);
+                var end = builder.Length;
+                builder.Append('\r');
+                spans.Add(new WordDraftBlockSpan { Block = block, Start = start, End = end });
+            }
+            text = builder.ToString();
+            return spans;
+        }
+
+        private static int? BuiltInStyleId(WordDraftBlock block)
+        {
+            switch (block.Type)
+            {
+                case "title": return -63;
+                case "heading": return block.Level == 1 ? -2 : block.Level == 2 ? -3 : -4;
+                case "quote": return -181;
+                case "paragraph":
+                case "bullets":
+                case "numbered": return -1;
+                default: return null;
+            }
+        }
+
+        private static void ApplyDraftParagraphStyle(object document, object range, WordDraftBlock block, string style)
+        {
+            var styleId = BuiltInStyleId(block);
+            if (styleId.HasValue) { WordCom.Set(range, "Style", styleId.Value); }
+            object format = null;
+            object font = null;
+            try
+            {
+                format = WordCom.Get(range, "ParagraphFormat");
+                if (block.Type == "heading" || block.Type == "title") { WordCom.Set(format, "KeepWithNext", true); }
+                if (block.Type == "quote") { WordCom.Set(format, "LeftIndent", 18f); }
+                if (style == "minimal" || style == "business" || style == "report")
+                {
+                    var after = style == "minimal" ? 4f : style == "business" ? 6f : 8f;
+                    WordCom.Set(format, "SpaceAfter", after);
+                    if (block.Type == "heading") { WordCom.Set(format, "SpaceBefore", block.Level == 1 ? 10f : 6f); }
+                    if (block.Type == "title" && style != "minimal") { WordCom.Set(format, "Alignment", 1); }
+                }
+
+                var size = DraftFontSize(block, style);
+                if (size.HasValue)
+                {
+                    font = WordCom.Get(range, "Font");
+                    WordCom.Set(font, "Size", size.Value);
+                }
+            }
+            finally { WordCom.Release(font); WordCom.Release(format); }
+        }
+
+        private static float? DraftFontSize(WordDraftBlock block, string style)
+        {
+            if (style == "follow_document") { return null; }
+            if (block.Type == "title") { return style == "report" ? 24f : 20f; }
+            if (block.Type == "heading")
+            {
+                if (block.Level == 1) { return style == "report" ? 16f : 15f; }
+                if (block.Level == 2) { return style == "report" ? 14f : 13f; }
+                return 12f;
+            }
+            return null;
+        }
+
+        private static void ApplyDraftRuns(object document, object blockRange, WordDraftBlock block, int start)
+        {
+            var offset = 0;
+            foreach (var run in block.Runs)
+            {
+                if (!run.Bold && !run.Italic) { offset += run.Text.Length; continue; }
+                object runRange = null;
+                object font = null;
+                try
+                {
+                    runRange = WordCom.Call(document, "Range", start + offset, start + offset + run.Text.Length);
+                    font = WordCom.Get(runRange, "Font");
+                    if (run.Bold) { WordCom.Set(font, "Bold", -1); }
+                    if (run.Italic) { WordCom.Set(font, "Italic", -1); }
+                }
+                finally { WordCom.Release(font); WordCom.Release(runRange); }
+                offset += run.Text.Length;
+            }
+        }
+
+        private static void ApplyDraftTableStyle(object table, string style)
+        {
+            object rows = null;
+            object headerRow = null;
+            object headerRange = null;
+            object font = null;
+            try
+            {
+                WordCom.TryCall(table, "AutoFitBehavior", out var ignored, 2);
+                WordCom.Release(ignored);
+                WordCom.TryGet(table, "Rows", out rows);
+                headerRow = WordCom.Item(rows, 1);
+                headerRange = WordCom.Get(headerRow, "Range");
+                font = WordCom.Get(headerRange, "Font");
+                WordCom.Set(font, "Bold", -1);
+                object shading = null;
+                try
+                {
+                    shading = WordCom.Get(headerRow, "Shading");
+                    var color = style == "business" ? 0xE5EFE7 : style == "report" ? 0xE5F0EE : 0xE8E8E8;
+                    WordCom.Set(shading, "BackgroundPatternColor", color);
+                }
+                finally { WordCom.Release(shading); }
+            }
+            finally { WordCom.Release(font); WordCom.Release(headerRange); WordCom.Release(headerRow); WordCom.Release(rows); }
+        }
+
+        private static void VerifyDraftTable(object table, WordDraftBlock block)
+        {
+            for (var row = 0; row <= block.Rows.Count; row++)
+            {
+                var expected = row == 0 ? block.Headers : block.Rows[row - 1];
+                for (var column = 0; column < expected.Count; column++)
+                {
+                    object cell = null;
+                    object range = null;
+                    try
+                    {
+                        cell = WordCom.Call(table, "Cell", row + 1, column + 1);
+                        range = WordCom.Get(cell, "Range");
+                        var actual = WordDocumentContext.Sanitize(WordCom.String(range, "Text"));
+                        if (!string.Equals(actual, expected[column], StringComparison.Ordinal))
+                        { throw new WordToolException("READBACK_FAILED", "草稿表格单元格读回与预期不一致。"); }
+                    }
+                    finally { WordCom.Release(range); WordCom.Release(cell); }
+                }
+            }
+        }
+
+        private sealed class WordDraftBlockSpan
+        {
+            internal WordDraftBlock Block;
+            internal int Start;
+            internal int End;
         }
 
         private ToolResult InsertText(JObject args, string undoId) { return SetText(args, undoId, false); }

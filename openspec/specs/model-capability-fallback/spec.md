@@ -62,10 +62,15 @@ progress was made.
 ### Requirement: A model that ignores tools but claims it cannot act switches too
 
 When a model under native declarations produces no tool calls on the first step of a turn
-and its reply states that it cannot access, see, or modify the workbook, the add-in SHALL
+and its reply states that it cannot access, see, or modify the workbook, or explicitly
+states that it cannot use or does not support tool/function calling, the add-in SHALL
 treat that as absent tool capability, SHALL record the text instruction protocol, and
 SHALL retry that step. The reply that made this claim SHALL NOT be kept in the
 conversation, so the model does not read its own refusal as established fact.
+
+The explicit tool capability path SHALL only match a reply that connects inability or lack
+of support to tool/function calling. Generic safety refusals and unrelated statements
+SHALL NOT trigger the switch.
 
 This heuristic SHALL be attempted at most once per connection and model, because a genuine
 refusal must not cause every later turn to be re-run.
@@ -75,6 +80,17 @@ refusal must not cause every later turn to be re-run.
 - **WHEN** a model given tool declarations replies that it has no access to the spreadsheet, without calling any tool
 - **THEN** the step is retried under the text instruction protocol
 - **AND THEN** the refusal is not present in the conversation history
+
+#### Scenario: Model explicitly says tool calling is unavailable
+
+- **WHEN** a model given tool declarations replies that it cannot use or does not support tool/function calling, without calling any tool
+- **THEN** the step is retried under the text instruction protocol
+- **AND THEN** the refusal is not present in the conversation history
+
+#### Scenario: Generic safety refusal does not trigger the heuristic
+
+- **WHEN** a model refuses an unsafe request without claiming that tool/function calling is unavailable
+- **THEN** the reply is delivered as the answer and the protocol is not switched
 
 #### Scenario: A refusal for other reasons is not retried repeatedly
 
@@ -254,3 +270,34 @@ gives detection nothing to react to, while the user may already know the model's
 
 - **WHEN** the tool protocol is left on automatic
 - **THEN** native declarations are used until a failure or refusal is detected
+
+### Requirement: Automatic mode preselects text protocol for DeepSeek Flash variants
+
+When the tool protocol preference is automatic and the selected model identifier clearly
+denotes a DeepSeek Flash or V4 Flash variant, the add-in SHALL start the turn in the text
+instruction protocol without sending native tool declarations first.
+
+The match SHALL be case-insensitive and SHALL tolerate provider prefixes and suffixes such
+as `deepseek/deepseek-v4-flash-vision-preview`, while not matching unrelated models that
+merely contain the word `flash`. The rule SHALL be based on the model identifier only as a
+conservative compatibility hint; an explicit user protocol choice SHALL take precedence.
+
+#### Scenario: DeepSeek V4 Flash uses text protocol immediately
+
+- **WHEN** automatic mode is selected and the model is `deepseek-v4-flash`
+- **THEN** the first request omits native tool declarations and uses the text instruction prompt
+
+#### Scenario: Provider-prefixed Flash variant uses text protocol
+
+- **WHEN** automatic mode is selected and the model is `deepseek/deepseek-v4-flash-vision-preview`
+- **THEN** the first request omits native tool declarations and uses the text instruction prompt
+
+#### Scenario: Manual native selection remains authoritative
+
+- **WHEN** the user explicitly selects native function calling for a DeepSeek Flash model
+- **THEN** the add-in starts with native tool declarations and does not apply the automatic hint
+
+#### Scenario: Unrelated Flash model is not forced to text
+
+- **WHEN** automatic mode is selected and the model identifier is `some-flash-model`
+- **THEN** the add-in retains the normal native-first automatic behavior

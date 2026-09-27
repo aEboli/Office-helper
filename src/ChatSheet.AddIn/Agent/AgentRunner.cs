@@ -304,7 +304,7 @@ namespace ChatSheet.AddIn.Agent
             // 这样审批、执行和工具结果回灌仍走同一条 Agent 链路。
             _toolMode = connection.IsWorkBuddy
                 ? ToolProtocolMode.Text
-                : ModelCapabilities.ResolveMode(settings.ToolProtocol, _capability);
+                : ModelCapabilities.ResolveMode(settings.ToolProtocol, _capability, connection.Model);
             _relayedImages.Clear();
 
             // 本轮的可用性判定要记到哪。与能力档案同键，但两者互不改写。
@@ -427,7 +427,7 @@ namespace ChatSheet.AddIn.Agent
                             ToolProtocolMode.Text,
                             settings,
                             onUpdate,
-                            "该模型收到工具声明后没有发起任何调用，只回复自己无法操作表格。已改用文本指令方式重试。")
+                            "该模型没有发起工具调用，并表示工具能力不可用。已改用文本指令方式重试。")
                             .ConfigureAwait(false);
 
                         // 原地重跑本步：上一次尝试没有任何进展，不该占掉一个步数。

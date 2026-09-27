@@ -22,6 +22,8 @@
 //   场景 notool 带 tools 的请求一律以 400 拒绝，不带则正常干活，并用文本指令块
 //              发起调用。用于验证「不支持原生工具调用」会自动改用文本协议，
 //              且解析出的调用照样走审批与执行。
+//   场景 toolrefusal 接受原生 tools 但回复没有工具调用能力，随后用文本指令块干活。
+//   场景 deepseek-flash 首个请求直接走文本指令块，验证型号兼容提示不会发送 tools。
 //   场景 novision 带图片的请求以 400 拒绝，不带则正常回文本。
 //              用于验证视觉回退：去图重发或经中转模型转写后继续。
 
@@ -339,11 +341,44 @@ const server = createServer((req, res) => {
         return;
       }
 
-      // notool 场景：用文本指令块发起调用，模拟只会按提示词照做的模型。
+      if (scenario === 'toolrefusal' && (parsed.tools ?? []).length > 0) {
+        console.log('[mock] toolrefusal: model says it cannot call tools');
+        const refusal = '我没有工具调用的能力。';
+        for (const piece of refusal.match(/.{1,6}/gs) ?? []) {
+          sse(res, textFrame(piece));
+        }
+
+        sse(res, finish('stop'));
+        sse(res, usage(240, 30));
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+
+      // notool、toolrefusal 与 deepseek-flash 场景：用文本指令块发起调用。
       //
       // 文本协议下工具结果是以 user 消息回灌的（协议里没有 tool 角色可用），
       // 因此不能靠 hasToolResult 判断轮次，要认那条消息里的标记。
-      if (scenario === 'notool') {
+      if (scenario === 'notool' || scenario === 'toolrefusal' || scenario === 'deepseek-flash') {
+        if (scenario === 'toolrefusal') {
+          const retainedRefusal = messages.some((m) =>
+            m.role === 'assistant' &&
+            typeof m.content === 'string' &&
+            m.content.includes('我没有工具调用的能力'));
+          console.log(retainedRefusal
+            ? '[mock] toolrefusal: retry retained the refusal'
+            : '[mock] toolrefusal: retry omitted the refusal');
+          console.log((parsed.tools ?? []).length === 0
+            ? '[mock] toolrefusal: retry omitted native tools'
+            : '[mock] toolrefusal: retry still has native tools');
+        }
+
+        if (scenario === 'deepseek-flash') {
+          console.log((parsed.tools ?? []).length === 0
+            ? '[mock] deepseek-flash: text protocol request (tools=0)'
+            : '[mock] deepseek-flash: unexpected native tools');
+        }
+
         // 认工具名而不是那句中文抬头：抬头的措辞随时可能改，
         // 而工具名是协议里的固定标识。用户的原始提问里不会出现它。
         const fed = messages.some((m) =>

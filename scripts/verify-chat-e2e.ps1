@@ -31,9 +31,10 @@ param(
     # reject 一律以 401 拒绝，验证配置类错误不被重试；
     # cut 第一轮模拟输出被长度上限截断，验证加载项自动续跑而不是当成结束；
     # cutloop 每轮都被截断，验证续跑有上限、不会无限空转；
-    # notool 带 tools 就以 400 拒绝，验证自动改用文本指令协议后照样能动手；
+    # notool 带 tools 就以 400 拒绝；toolrefusal 接受 tools 但声称没有调用能力；
+    # deepseek-flash 验证自动模式首轮直接用文本指令协议；三者都验证照样能动手；
     # novision 带图片就以 400 拒绝，验证视觉回退（去图或经中转转写）。
-    [ValidateSet('tool', 'bulk', 'image', 'flaky', 'reject', 'cut', 'cutloop', 'notool', 'novision', 'grant')]
+    [ValidateSet('tool', 'bulk', 'image', 'flaky', 'reject', 'cut', 'cutloop', 'notool', 'toolrefusal', 'deepseek-flash', 'novision', 'grant')]
     [string]$Scenario = 'tool',
 
     # image 与 novision 场景下附加一张测试图片。
@@ -111,7 +112,7 @@ try {
         cliSource = 'Auto'
         customProtocol = 'openai-chat-completions'
         customBaseUrl = "http://127.0.0.1:$MockPort/v1"
-        model = 'mock-model'
+        model = if ($Scenario -eq 'deepseek-flash') { 'deepseek-v4-flash' } else { 'mock-model' }
         thinking = 'Off'
         approval = $Approval
         maxOutputTokens = 8192
@@ -133,7 +134,7 @@ try {
         $bytes, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
     New-Item -ItemType Directory -Path (Split-Path $SecretPath) -Force | Out-Null
     [System.IO.File]::WriteAllBytes($SecretPath, $cipher)
-    Write-Ok "已指向 http://127.0.0.1:$MockPort/v1，模型 mock-model"
+    Write-Ok "已指向 http://127.0.0.1:$MockPort/v1，模型 $($settings.model)"
 
     Write-Step '部署当前构建'
     # 必须先部署：本脚本只负责启动宿主，不会自动同步产物。
@@ -438,17 +439,40 @@ public static class XlApp
         return
     }
 
-    # 工具能力回退判定：带 tools 的请求被拒后应改用文本指令协议，
-    # 并且解析出的调用要真的落到单元格里——只降级不干活等于没解决问题。
-    if ($Scenario -eq 'notool') {
+    # 工具能力回退判定：无论是接口拒绝 tools，还是模型明确说没有调用能力，
+    # 都应改用文本指令协议，并且解析出的调用要真的落到单元格里。
+    if ($Scenario -in @('notool', 'toolrefusal', 'deepseek-flash')) {
         Write-Step '工具形态回退判定'
         $log = if (Test-Path -LiteralPath $logFile) { Get-Content -LiteralPath $logFile -Encoding UTF8 -Raw } else { '' }
         $mockText = if (Test-Path -LiteralPath $mockLog) { Get-Content -LiteralPath $mockLog -Raw } else { '' }
 
-        if ($mockText -match 'tools not supported') { Write-Ok 'mock 已拒绝带 tools 的请求' }
-        else { Write-Bad 'mock 未进入拒绝分支，本次没有验到回退' }
+        if ($Scenario -eq 'notool') {
+            if ($mockText -match 'tools not supported') { Write-Ok 'mock 已拒绝带 tools 的请求' }
+            else { Write-Bad 'mock 未进入拒绝分支，本次没有验到回退' }
+        }
+        elseif ($Scenario -eq 'toolrefusal') {
+            if ($mockText -match 'toolrefusal: model says it cannot call tools') { Write-Ok 'mock 已模拟模型声明没有工具调用能力' }
+            else { Write-Bad 'mock 未模拟模型能力拒绝' }
 
-        if ($log -match '工具形态降级为 Text') { Write-Ok '已改用文本指令协议' }
+            if ($mockText -match 'toolrefusal: retry omitted the refusal') { Write-Ok '重试上下文没有保留首次拒绝' }
+            else { Write-Bad '首次拒绝仍留在重试上下文中' }
+
+            if ($mockText -match 'toolrefusal: retry omitted native tools') { Write-Ok '文本协议重试未携带原生 tools' }
+            else { Write-Bad '文本协议重试仍携带原生 tools' }
+        }
+        else {
+            if ($mockText -match 'deepseek-flash: text protocol request \(tools=0\)') { Write-Ok 'DeepSeek Flash 首个请求直接使用文本协议' }
+            else { Write-Bad 'DeepSeek Flash 首个请求没有确认使用文本协议' }
+
+            if ($mockText -match 'deepseek-flash: unexpected native tools') { Write-Bad 'DeepSeek Flash 请求仍携带原生 tools' }
+            else { Write-Ok 'DeepSeek Flash 请求未携带原生 tools' }
+        }
+
+        if ($Scenario -eq 'deepseek-flash') {
+            if ($log -match '本轮工具形态：Text') { Write-Ok 'DeepSeek Flash 自动预选文本指令协议' }
+            else { Write-Bad '未见 DeepSeek Flash 文本协议预选记录，整轮可能直接失败了' }
+        }
+        elseif ($log -match '工具形态降级为 Text') { Write-Ok '已改用文本指令协议' }
         else { Write-Bad '未见降级记录，整轮可能直接失败了' }
 
         # 降级后必须真的干成活。
@@ -457,10 +481,19 @@ public static class XlApp
 
         if ($log -match '对话结束') { Write-Ok '本轮正常收尾' } else { Write-Bad '本轮未正常收尾' }
 
-        # 降级后不能再带 tools，否则每一步都要先撞一次 400。
-        $rejects = @([regex]::Matches($mockText, 'tools not supported')).Count
-        if ($rejects -le 2) { Write-Ok "带 tools 的请求只发了 $rejects 次" }
-        else { Write-Bad "带 tools 的请求发了 $rejects 次，降级没有生效到后续步骤" }
+        # 能力回退后原生模式只应出现一次，预先兼容时则一次都不应出现。
+        if ($Scenario -eq 'notool') {
+            $nativeAttempts = @([regex]::Matches($mockText, 'tools not supported')).Count
+        }
+        elseif ($Scenario -eq 'toolrefusal') {
+            $nativeAttempts = @([regex]::Matches($mockText, 'toolrefusal: model says it cannot call tools')).Count
+        }
+        else {
+            $nativeAttempts = @([regex]::Matches($mockText, 'tools=18')).Count
+        }
+        $expectedNativeAttempts = if ($Scenario -eq 'deepseek-flash') { 0 } else { 1 }
+        if ($nativeAttempts -eq $expectedNativeAttempts) { Write-Ok "原生 tools 尝试次数符合预期：$nativeAttempts" }
+        else { Write-Bad "预期原生 tools 尝试 $expectedNativeAttempts 次，实际 $nativeAttempts 次" }
 
         try {
             $sheet = $app.ActiveWorkbook.Worksheets.Item(1)

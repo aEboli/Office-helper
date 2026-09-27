@@ -2,17 +2,17 @@
 
 Office-helper 同时安装 Excel/WPS 表格和 Word/WPS Writer 两个 COM 入口。旧 Excel 入口仍使用 ChatSheet 的 ProgID、CLSID 和本地目录，仅作为兼容标识，不代表产品仍只支持 Excel。
 
-本文适用于 GitHub Release 中的 `ChatSheet-v0.10.3.16-win.zip`，不适用于从 Git 克隆的源码目录。
+本文适用于 GitHub Release 中的 `ChatSheet-v0.10.3.17-win.zip`，不适用于从 Git 克隆的源码目录。
 
 > [!IMPORTANT]
 > 这是带 PowerShell 安装入口的预构建 ZIP，不是 MSI 或 EXE 安装器。发行包未进行代码签名；请先核对 SHA-256，再运行安装脚本。
 
 ## 发行包内容
 
-解压 `ChatSheet-v0.10.3.16-win.zip` 后，目录结构如下：
+解压 `ChatSheet-v0.10.3.17-win.zip` 后，目录结构如下：
 
 ```text
-ChatSheet-v0.10.3.16-win/
+ChatSheet-v0.10.3.17-win/
 ├── install.bat                  # 双击打开安装菜单
 ├── app/                         # 预构建 COM 加载项、WebView2 面板和依赖
 ├── scripts/
@@ -20,11 +20,11 @@ ChatSheet-v0.10.3.16-win/
 │   ├── menu.ps1                 # install.bat 背后的交互菜单
 │   └── ChatSheet.Registration.psm1
 ├── INSTALL.md                   # 本文副本，方便离线查阅
-├── RELEASE-NOTES.md             # v0.10.3.16 发行说明
+├── RELEASE-NOTES.md             # v0.10.3.17 发行说明
 └── SHA256SUMS.txt               # 包内文件校验清单
 ```
 
-GitHub Release 页面同时提供 `ChatSheet-v0.10.3.16-win.zip.sha256`，用于核对整个 ZIP 文件。
+GitHub Release 页面同时提供 `ChatSheet-v0.10.3.17-win.zip.sha256`，用于核对整个 ZIP 文件。
 
 ## 系统要求与支持范围
 
@@ -38,20 +38,20 @@ GitHub Release 页面同时提供 `ChatSheet-v0.10.3.16-win.zip.sha256`，用于
 | 不需要 | .NET SDK、Node.js、Office.js 开发证书、常驻本地 HTTP 服务 |
 | 不支持 | Excel for Mac、Excel 网页版 |
 
-安装包不会自动更新，也不承诺静默安装或跨用户安装。Windows 或组织策略可能对网络下载的 ZIP 或 PowerShell 脚本显示安全提示；请只从 [Office-helper GitHub Release](https://github.com/aEboli/Office-helper/releases/tag/v0.10.3.16) 下载。
+安装包不会自动更新，也不承诺静默安装或跨用户安装。Windows 或组织策略可能对网络下载的 ZIP 或 PowerShell 脚本显示安全提示；请只从 [Office-helper GitHub Release](https://github.com/aEboli/Office-helper/releases/tag/v0.10.3.17) 下载。
 
 ## 1. 下载并验证 SHA-256
 
-从 [v0.10.3.16 Release](https://github.com/aEboli/Office-helper/releases/tag/v0.10.3.16) 下载下面两个文件到同一目录：
+从 [v0.10.3.17 Release](https://github.com/aEboli/Office-helper/releases/tag/v0.10.3.17) 下载下面两个文件到同一目录：
 
-- `ChatSheet-v0.10.3.16-win.zip`
-- `ChatSheet-v0.10.3.16-win.zip.sha256`
+- `ChatSheet-v0.10.3.17-win.zip`
+- `ChatSheet-v0.10.3.17-win.zip.sha256`
 
 在 PowerShell 中进入下载目录：
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\ChatSheet-v0.10.3.16-win.zip
-Get-Content .\ChatSheet-v0.10.3.16-win.zip.sha256
+Get-FileHash -Algorithm SHA256 .\ChatSheet-v0.10.3.17-win.zip
+Get-Content .\ChatSheet-v0.10.3.17-win.zip.sha256
 ```
 
 以 Release 页面提供的 `.sha256` 文件为准；两条命令中的 64 位十六进制值必须完全一致。若不一致，请不要解压或运行脚本，删除文件后重新下载。
@@ -70,7 +70,7 @@ foreach ($line in $expected) {
 
 ## 2. 解压并安装
 
-1. 右键 ZIP，选择“全部解压缩”，保留完整的 `ChatSheet-v0.10.3.16-win` 目录结构，不要只复制 DLL。
+1. 右键 ZIP，选择“全部解压缩”，保留完整的 `ChatSheet-v0.10.3.17-win` 目录结构，不要只复制 DLL。
 2. 保存并完全关闭 Microsoft Excel、Microsoft Word 和 WPS。覆盖升级时旧宿主可能占用 DLL，安装器会拒绝半新半旧的复制。
 3. 双击解压根目录下的 `install.bat`，在菜单中输入 `1`：
 

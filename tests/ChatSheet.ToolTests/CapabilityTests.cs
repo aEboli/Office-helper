@@ -104,11 +104,40 @@ namespace ChatSheet.ToolTests
                 CapabilitySignals.LooksLikeToolRefusal("I cannot access your spreadsheet directly."),
                 "");
 
-            // 反例：模型拒绝越权请求时也会说「我不能」，那是正确行为，
-            // 不该触发降级。判据因此要求同时谈到表格。
+            report(
+                "中文明确表示没有工具调用能力",
+                CapabilitySignals.LooksLikeToolRefusal("我没有工具调用的能力。"),
+                "");
+
+            report(
+                "中文明确表示不支持函数调用",
+                CapabilitySignals.LooksLikeToolRefusal("当前模型不支持函数调用。"),
+                "");
+
+            report(
+                "英文明确表示不能调用 tools",
+                CapabilitySignals.LooksLikeToolRefusal("I don't have the ability to call tools."),
+                "");
+
+            report(
+                "英文明确表示 function calling 不受支持",
+                CapabilitySignals.LooksLikeToolRefusal("This model does not support function calling."),
+                "");
+
+            // 反例：普通安全拒绝不代表工具能力缺失。
             report(
                 "拒绝无关请求不判为推辞",
                 !CapabilitySignals.LooksLikeToolRefusal("我不能帮你写病毒程序。"),
+                "");
+
+            report(
+                "英文安全拒绝不判为推辞",
+                !CapabilitySignals.LooksLikeToolRefusal("I can't help create malware."),
+                "");
+
+            report(
+                "只讨论工具调用不判为推辞",
+                !CapabilitySignals.LooksLikeToolRefusal("I can use function calling to read the workbook."),
                 "");
 
             // 反例：正常作答里会大量出现「表格」二字。
@@ -305,15 +334,59 @@ namespace ChatSheet.ToolTests
                 ModelCapabilities.ResolveMode(ToolProtocolPreference.Auto, a) == ToolProtocolMode.Text,
                 "");
 
+            ModelCapabilities.Reset();
+            var fresh = ModelCapabilities.For("CustomApi|openai|https://a/v1", "m1");
+            report("重置后档案回到默认", fresh.ToolMode == ToolProtocolMode.Native, fresh.ToolMode.ToString());
+
+            report(
+                "DeepSeek V4 Flash 自动采用文本协议",
+                ModelCapabilities.ResolveMode(
+                    ToolProtocolPreference.Auto,
+                    fresh,
+                    "deepseek-v4-flash") == ToolProtocolMode.Text,
+                "");
+
+            report(
+                "带 provider 前缀的 DeepSeek Flash 自动采用文本协议",
+                ModelCapabilities.ResolveMode(
+                    ToolProtocolPreference.Auto,
+                    fresh,
+                    "deepseek/deepseek-v4-flash-vision-preview") == ToolProtocolMode.Text,
+                "");
+
+            report(
+                "DeepSeek Flash 型号匹配不区分大小写",
+                ModelCapabilities.IsDeepSeekFlashModel("DeepSeek-V4-FLASH") &&
+                    ModelCapabilities.IsDeepSeekFlashModel("deepseek-flash"),
+                "");
+
+            report(
+                "普通 Flash 型号不强制文本协议",
+                !ModelCapabilities.IsDeepSeekFlashModel("some-flash-model") &&
+                    ModelCapabilities.ResolveMode(
+                        ToolProtocolPreference.Auto,
+                        fresh,
+                        "some-flash-model") == ToolProtocolMode.Native,
+                "");
+
+            report(
+                "DeepSeek Flashlight 型号不强制文本协议",
+                !ModelCapabilities.IsDeepSeekFlashModel("deepseek-flashlight"),
+                "");
+
+            report(
+                "手动原生覆盖 DeepSeek Flash 兼容提示",
+                ModelCapabilities.ResolveMode(
+                    ToolProtocolPreference.Native,
+                    fresh,
+                    "deepseek-v4-flash") == ToolProtocolMode.Native,
+                "");
+
             report(
                 "手动指定时不再探测",
                 !ModelCapabilities.DetectionEnabled(ToolProtocolPreference.Text) &&
                     ModelCapabilities.DetectionEnabled(ToolProtocolPreference.Auto),
                 "");
-
-            ModelCapabilities.Reset();
-            var fresh = ModelCapabilities.For("CustomApi|openai|https://a/v1", "m1");
-            report("重置后档案回到默认", fresh.ToolMode == ToolProtocolMode.Native, fresh.ToolMode.ToString());
 
             TestTextProtocolTally(report);
         }

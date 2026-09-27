@@ -14,6 +14,33 @@ namespace ChatWord.AddIn.Tools
         private static object Str(string description) { return new { type = "string", description }; }
         private static object Int(string description) { return new { type = "integer", description }; }
         private static object Bool(string description) { return new { type = "boolean", description }; }
+        private static object EnumString(string description, params string[] values) { return new { type = "string", description, @enum = values }; }
+        private static object DraftBlockSchema => new
+        {
+            type = "object",
+            properties = new
+            {
+                type = EnumString("内容块类型。", "title", "heading", "paragraph", "bullets", "numbered", "table", "quote"),
+                text = Str("标题或段落文本；与 runs 二选一。"),
+                level = Int("heading 的层级，1 到 3。"),
+                runs = new
+                {
+                    type = "array",
+                    items = new
+                    {
+                        type = "object",
+                        properties = new { text = Str("文本片段。"), bold = Bool("是否加粗。"), italic = Bool("是否斜体。") },
+                        required = new[] { "text" },
+                        additionalProperties = false,
+                    },
+                },
+                items = new { type = "array", items = Str("列表项。") },
+                headers = new { type = "array", items = Str("表头单元格。") },
+                rows = new { type = "array", items = new { type = "array", items = Str("表格单元格。") } },
+            },
+            required = new[] { "type" },
+            additionalProperties = false,
+        };
         private static readonly object Target = new
         {
             type = "object", description = "明确的 Word 目标；每次只提供一种定位方式。插入光标位置仅传 story、start、end；段落、表格、书签和内容控件定位不要混传，也不要补零值或空字符串。正文、页眉、页脚、脚注和批注必须显式指定 story。",
@@ -26,6 +53,10 @@ namespace ChatWord.AddIn.Tools
                 bookmark = Str("书签名称。"), content_control = Str("内容控件的 Title、Tag 或序号。"),
             }, additionalProperties = false,
         };
+        internal static readonly ToolDefinition InsertDraft = new ToolDefinition(
+            "insert_document_draft", "将用户确认的 Word 草稿写入指定文档位置。", ToolRisk.Write,
+            Obj(new { draft_id = Str("待插入草稿 ID。") }, "draft_id"));
+
         private static object WithTarget(object properties, params string[] required)
         {
             var fields = JObject.FromObject(properties);
@@ -44,6 +75,13 @@ namespace ChatWord.AddIn.Tools
             new ToolDefinition("find_text", "在明确 Story/范围内查找文字，不会默认搜索整个文档。", ToolRisk.Read, WithTarget(new { text = Str("要查找的文字。"), match_case = Bool("是否区分大小写。") }, "target", "text")),
             new ToolDefinition("replace_text", "在明确目标范围内替换文字；不提供目标时拒绝执行。", ToolRisk.Write, WithTarget(new { find = Str("要替换的文字；为空时将目标整体替换。"), replace = Str("替换后的文字。") }, "target", "replace")),
             new ToolDefinition("insert_text", "在明确的折叠位置插入文字；光标目标只使用 story、start、end。", ToolRisk.Write, WithTarget(new { text = Str("要插入的文字。") }, "target", "text")),
+            new ToolDefinition("draft_document", "创建或更新待确认的 Word 草稿预览；不会修改文档。模型生成的内容必须先使用此工具。", ToolRisk.Read, Obj(new
+            {
+                draft_id = Str("更新既有草稿时传回已有 ID；新草稿省略。"),
+                operation = EnumString("草稿确认后的目标操作。", "insert", "replace"),
+                style = EnumString("预览和写入的版式风格。", "follow_document", "minimal", "business", "report"),
+                blocks = new { type = "array", items = DraftBlockSchema },
+            }, "operation", "blocks")),
             new ToolDefinition("delete_range", "删除明确目标范围的文字。", ToolRisk.Write, WithTarget(new { } , "target")),
             new ToolDefinition("format_text", "设置明确范围的字符格式。", ToolRisk.Write, WithTarget(new { bold = Bool("是否加粗。"), italic = Bool("是否倾斜。"), underline = Bool("是否下划线。"), font_size = new { type = "number", description = "字号。" } }, "target")),
             new ToolDefinition("format_paragraph", "设置明确范围所在段落的缩进、段前段后和对齐方式。", ToolRisk.Write, WithTarget(new { alignment = Str("left、center、right 或 justify。"), first_line_indent_chars = new { type = "number", description = "首行缩进字符数；负值表示悬挂缩进。" }, space_before = new { type = "number" }, space_after = new { type = "number" }, keep_with_next = Bool("是否与下一段同页。") }, "target")),

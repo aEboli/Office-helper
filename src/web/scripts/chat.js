@@ -22,6 +22,7 @@ const TOOL_LABELS = {
   find_text: '查找文字',
   replace_text: '替换文字',
   insert_text: '插入文字',
+  insert_document_draft: '插入文档草稿',
   delete_range: '删除文档范围',
   format_text: '设置字符格式',
   format_paragraph: '设置段落格式',
@@ -85,6 +86,7 @@ let usageLine;
 let queueStrip;
 
 let busy = false;
+let draftOperationPending = false;
 let currentAssistant = null;
 let currentThinking = null;
 
@@ -1767,6 +1769,7 @@ function setStatus(text) {
 function setBusy(value) {
   busy = value;
   sendButton.classList.toggle('is-busy', value);
+  syncDraftControls();
   updateSendAffordance();
   // 模型选择器要知道这件事：加载项在对话进行中会拒绝批量测试，而那条拒绝
   // 只落在宿主日志里，面板上不出任何东西。告诉它，好把「测试」先禁掉并说明原因。
@@ -1912,6 +1915,272 @@ async function refreshContext(source = '主动查询') {
   }
 }
 
+const DRAFT_STYLE_LABELS = {
+  follow_document: '沿用文档',
+  minimal: '简洁',
+  business: '商务',
+  report: '报告',
+};
+
+function appendDraftRuns(parent, runs) {
+  (Array.isArray(runs) ? runs : []).forEach((run) => {
+    let node = document.createTextNode(typeof run?.text === 'string' ? run.text : '');
+    if (run?.bold) {
+      const strong = document.createElement('strong');
+      strong.append(node);
+      node = strong;
+    }
+    if (run?.italic) {
+      const emphasis = document.createElement('em');
+      emphasis.append(node);
+      node = emphasis;
+    }
+    parent.append(node);
+  });
+}
+
+function createDraftBlock(block) {
+  const type = block?.type;
+  if (type === 'table') {
+    const table = document.createElement('table');
+    const head = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    (Array.isArray(block.headers) ? block.headers : []).forEach((value) => {
+      const cell = document.createElement('th');
+      cell.textContent = String(value ?? '');
+      headerRow.append(cell);
+    });
+    head.append(headerRow);
+    table.append(head);
+    const body = document.createElement('tbody');
+    (Array.isArray(block.rows) ? block.rows : []).forEach((row) => {
+      const rowElement = document.createElement('tr');
+      (Array.isArray(row) ? row : []).forEach((value) => {
+        const cell = document.createElement('td');
+        cell.textContent = String(value ?? '');
+        rowElement.append(cell);
+      });
+      body.append(rowElement);
+    });
+    table.append(body);
+    return table;
+  }
+
+  if (type === 'bullets' || type === 'numbered') {
+    const list = document.createElement(type === 'bullets' ? 'ul' : 'ol');
+    (Array.isArray(block.items) ? block.items : []).forEach((value) => {
+      const item = document.createElement('li');
+      item.textContent = String(value ?? '');
+      list.append(item);
+    });
+    return list;
+  }
+
+  const tag = type === 'title' ? 'h3'
+    : type === 'heading' ? `h${Math.min(5, Math.max(3, (Number(block.level) || 1) + 2))}`
+      : type === 'quote' ? 'blockquote' : 'p';
+  const element = document.createElement(tag);
+  if (type === 'title') { element.className = 'word-draft-title'; }
+  appendDraftRuns(element, block?.runs);
+  return element;
+}
+
+function syncDraftControls() {
+  transcript?.querySelectorAll('.word-draft-card:not(.is-closed)').forEach((card) => {
+    const disabled = busy || card.dataset.pending === 'true';
+    card.querySelectorAll('button, select, textarea').forEach((control) => {
+      control.disabled = disabled;
+    });
+  });
+}
+
+function addDocumentDraft(payload) {
+  if (!payload?.id || !Array.isArray(payload.blocks)) { return; }
+  let card = [...transcript.querySelectorAll('.word-draft-card')]
+    .find((item) => item.dataset.draftId === payload.id);
+  const isNew = !card;
+  if (isNew) {
+    card = document.createElement('section');
+    card.className = 'word-draft-card';
+    card.dataset.draftId = payload.id;
+
+    const heading = document.createElement('div');
+    heading.className = 'word-draft-heading';
+    const title = document.createElement('strong');
+    title.className = 'word-draft-heading-title';
+    title.textContent = 'Word 草稿';
+    const documentName = document.createElement('span');
+    documentName.className = 'word-draft-document';
+    heading.append(title, documentName);
+
+    const target = document.createElement('p');
+    target.className = 'word-draft-target';
+    const selectedText = document.createElement('details');
+    selectedText.className = 'word-draft-selection';
+    const selectedSummary = document.createElement('summary');
+    selectedSummary.textContent = '查看待替换内容';
+    const selectedValue = document.createElement('div');
+    selectedValue.className = 'word-draft-selection-text';
+    selectedText.append(selectedSummary, selectedValue);
+
+    const controls = document.createElement('div');
+    controls.className = 'word-draft-controls';
+    const styleLabel = document.createElement('label');
+    styleLabel.className = 'word-draft-style-label';
+    styleLabel.append(document.createTextNode('版式'));
+    const styleSelect = document.createElement('select');
+    styleSelect.className = 'word-draft-style';
+    styleSelect.setAttribute('aria-label', '草稿版式');
+    Object.entries(DRAFT_STYLE_LABELS).forEach(([value, label]) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      styleSelect.append(option);
+    });
+    styleLabel.append(styleSelect);
+
+    const preview = document.createElement('div');
+    preview.className = 'word-draft-preview';
+    const actions = document.createElement('div');
+    actions.className = 'word-draft-actions';
+    const adjust = document.createElement('button');
+    adjust.type = 'button';
+    adjust.className = 'word-draft-button';
+    adjust.textContent = '继续调整';
+    const insert = document.createElement('button');
+    insert.type = 'button';
+    insert.className = 'word-draft-button is-primary';
+    const discard = document.createElement('button');
+    discard.type = 'button';
+    discard.className = 'word-draft-button';
+    discard.textContent = '丢弃';
+    actions.append(adjust, insert, discard);
+
+    const adjustForm = document.createElement('form');
+    adjustForm.className = 'word-draft-adjust-form';
+    adjustForm.hidden = true;
+    const adjustment = document.createElement('textarea');
+    adjustment.rows = 2;
+    adjustment.maxLength = 2000;
+    adjustment.placeholder = '描述要调整的内容';
+    adjustment.setAttribute('aria-label', '草稿调整要求');
+    const formActions = document.createElement('div');
+    formActions.className = 'word-draft-form-actions';
+    const applyAdjustment = document.createElement('button');
+    applyAdjustment.type = 'submit';
+    applyAdjustment.className = 'word-draft-button is-primary';
+    applyAdjustment.textContent = '发送调整';
+    const cancelAdjustment = document.createElement('button');
+    cancelAdjustment.type = 'button';
+    cancelAdjustment.className = 'word-draft-button';
+    cancelAdjustment.textContent = '取消';
+    formActions.append(applyAdjustment, cancelAdjustment);
+    adjustForm.append(adjustment, formActions);
+    controls.append(styleLabel);
+    card.append(heading, target, selectedText, controls, preview, actions, adjustForm);
+
+    styleSelect.addEventListener('change', async () => {
+      const previous = card.dataset.style ?? 'follow_document';
+      const style = styleSelect.value;
+      card.dataset.pending = 'true';
+      card.dataset.style = style;
+      syncDraftControls();
+      try {
+        const result = await request('draft.style', { id: payload.id, style });
+        if (!result?.ok) { throw new Error(result?.message ?? '无法更新草稿版式。'); }
+      } catch (error) {
+        card.dataset.style = previous;
+        styleSelect.value = previous;
+        addNotice(`调整草稿版式失败：${error.message}`, 'error');
+      } finally {
+        card.dataset.pending = 'false';
+        syncDraftControls();
+      }
+    });
+
+    adjust.addEventListener('click', () => {
+      adjustForm.hidden = false;
+      adjustment.focus();
+    });
+    cancelAdjustment.addEventListener('click', () => {
+      adjustForm.hidden = true;
+      adjustment.value = '';
+    });
+    adjustForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const instruction = adjustment.value.trim();
+      if (!instruction) { adjustment.focus(); return; }
+      if (submit(instruction, payload.id)) {
+        adjustment.value = '';
+        adjustForm.hidden = true;
+      }
+    });
+    insert.addEventListener('click', async () => {
+      draftOperationPending = true;
+      card.dataset.pending = 'true';
+      syncDraftControls();
+      try {
+        const result = await request('draft.insert', { id: payload.id }, { timeout: 0 });
+        if (!result?.ok) { throw new Error(result?.message ?? '无法插入草稿。'); }
+      } catch (error) {
+        addNotice(`插入草稿失败：${error.message}`, 'error');
+      } finally {
+        draftOperationPending = false;
+        card.dataset.pending = 'false';
+        syncDraftControls();
+        void pumpQueue();
+      }
+    });
+    discard.addEventListener('click', async () => {
+      card.dataset.pending = 'true';
+      syncDraftControls();
+      try {
+        const result = await request('draft.discard', { id: payload.id });
+        if (!result?.ok) { throw new Error(result?.message ?? '无法丢弃草稿。'); }
+      } catch (error) {
+        addNotice(`丢弃草稿失败：${error.message}`, 'error');
+      } finally {
+        card.dataset.pending = 'false';
+        syncDraftControls();
+      }
+    });
+  }
+
+  const storyLabels = {
+    main_text: '正文', primary_header: '页眉', primary_footer: '页脚',
+    footnotes: '脚注', endnotes: '尾注', comments: '批注',
+  };
+  const target = payload.target ?? {};
+  const story = storyLabels[target.story] ?? target.story ?? '正文';
+  card.dataset.style = payload.style;
+  card.querySelector('.word-draft-document').textContent = payload.documentName || '当前文档';
+  card.querySelector('.word-draft-style').value = payload.style;
+  card.querySelector('.word-draft-target').textContent = payload.operation === 'replace'
+    ? `确认后将替换 ${story} ${target.start ?? ''}-${target.end ?? ''} 的选中内容`
+    : `确认后将在 ${story} ${target.start ?? ''} 处插入`;
+  const selection = card.querySelector('.word-draft-selection');
+  selection.hidden = payload.operation !== 'replace';
+  selection.querySelector('.word-draft-selection-text').textContent = target.text || '（选区为空）';
+  card.querySelector('.word-draft-actions .is-primary').textContent = payload.operation === 'replace'
+    ? '确认替换选区' : '插入到文档';
+  card.querySelector('.word-draft-preview').replaceChildren(...payload.blocks.map(createDraftBlock));
+  if (isNew) { mountToTranscript(card); }
+  syncDraftControls();
+  scrollToBottom();
+}
+
+function closeDocumentDraft(payload) {
+  const card = [...transcript.querySelectorAll('.word-draft-card')]
+    .find((item) => item.dataset.draftId === payload?.id);
+  if (!card) { return; }
+  card.classList.add('is-closed');
+  card.dataset.pending = 'false';
+  card.querySelector('.word-draft-heading-title').textContent = payload.status === 'inserted' ? '已插入文档' : '草稿已丢弃';
+  card.querySelector('.word-draft-controls').remove();
+  card.querySelector('.word-draft-actions').remove();
+  card.querySelector('.word-draft-adjust-form')?.remove();
+}
+
 function handleAgent(message) {
   switch (message.stage) {
     case 'text':
@@ -1934,6 +2203,12 @@ function handleAgent(message) {
     case 'tool-result':
       finishToolCard(message.payload ?? {});
       showPending();
+      break;
+    case 'document-draft':
+      addDocumentDraft(message.payload ?? {});
+      break;
+    case 'draft-closed':
+      closeDocumentDraft(message.payload ?? {});
       break;
     case 'approval-grants':
       renderApprovalGrants(message.payload?.grants ?? []);
@@ -2010,8 +2285,10 @@ function hasComposerContent() {
  * 两条路合成一个入口：用户按 Enter 时不必先判断「现在能不能发」，
  * 界面也不必再靠禁用输入框来表达「等一下」。
  */
-function submit() {
-  if (!hasComposerContent()) {
+function submit(textOverride = null, draftId = null) {
+  const fromComposer = textOverride === null;
+  const text = fromComposer ? composer.value.trim() : String(textOverride ?? '').trim();
+  if (!text && !(fromComposer && hasAttachments())) {
     return;
   }
 
@@ -2022,21 +2299,25 @@ function submit() {
 
   const entry = {
     id: `q${++queueSequence}`,
-    text: composer.value.trim(),
+    text,
+    draftId,
     // 附件在入队时就取出快照：输入框随即清空，之后加的附件属于下一条。
-    images: getImages(),
-    files: getFiles(),
+    images: fromComposer ? getImages() : [],
+    files: fromComposer ? getFiles() : [],
   };
 
-  composer.value = '';
-  clearAttachments();
-  autoGrow();
+  if (fromComposer) {
+    composer.value = '';
+    clearAttachments();
+    autoGrow();
+  }
 
   queue.push(entry);
   renderQueueStrip();
   updateSendAffordance();
 
   void pumpQueue();
+  return true;
 }
 
 /** 排队项在排队条上显示的一行字。没有正文时用附件充当标题。 */
@@ -2166,7 +2447,7 @@ function clearQueue() {
  * 而加载项只接受一轮，第二条会撞上 BUSY 而白丢一次输入。
  */
 async function pumpQueue() {
-  if (pumping) {
+  if (pumping || draftOperationPending) {
     return;
   }
 
@@ -2208,7 +2489,7 @@ async function runTurn(entry) {
   try {
     const result = await request(
       'chat.send',
-      { text: entry.text, images: entry.images, files: entry.files },
+      { text: entry.text, images: entry.images, files: entry.files, draftId: entry.draftId },
       { timeout: 0 },
     );
 

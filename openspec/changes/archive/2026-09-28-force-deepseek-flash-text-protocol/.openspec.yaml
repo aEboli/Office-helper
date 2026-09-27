@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-28
+goal: 自动模式下预先以文本指令协议兼容 DeepSeek Flash 变体，避免首轮原生工具调用拒绝。
