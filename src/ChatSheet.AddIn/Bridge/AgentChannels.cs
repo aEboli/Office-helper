@@ -36,6 +36,9 @@ namespace ChatSheet.AddIn.Bridge
         private readonly ConcurrentDictionary<string, TaskCompletionSource<ApprovalDecision>> _pendingApprovals =
             new ConcurrentDictionary<string, TaskCompletionSource<ApprovalDecision>>(StringComparer.Ordinal);
 
+        private readonly ConcurrentDictionary<string, TaskCompletionSource<string>> _pendingObjectRoots =
+            new ConcurrentDictionary<string, TaskCompletionSource<string>>(StringComparer.Ordinal);
+
         private CancellationTokenSource _currentRun;
 
         /// <summary>
@@ -198,6 +201,7 @@ namespace ChatSheet.AddIn.Bridge
                 return Task.FromResult<object>(new { reset = true });
             };
             handlers["approval.respond"] = RespondApprovalAsync;
+            handlers["tool.root.respond"] = RespondObjectRootAsync;
 
             // 收回本轮授权。不停止本轮——用户想停的是自动放行，不是整个任务。
             handlers["approval.revoke"] = _ =>
@@ -1892,6 +1896,7 @@ namespace ChatSheet.AddIn.Bridge
             finally
             {
                 FailPendingApprovals("任务已结束");
+                FailPendingObjectRoots();
                 Interlocked.CompareExchange(ref _currentRun, null, cts);
                 cts.Dispose();
             }
@@ -1976,7 +1981,8 @@ namespace ChatSheet.AddIn.Bridge
                     _push,
                     RequestApprovalAsync,
                     cts.Token,
-                    images).ConfigureAwait(false);
+                    images,
+                    callId => RequestObjectRootAsync(callId, cts.Token)).ConfigureAwait(false);
 
                 return new { completed = true };
             }
@@ -2169,6 +2175,53 @@ namespace ChatSheet.AddIn.Bridge
             return Task.FromResult<object>(new { accepted = true });
         }
 
+        internal async Task<string> RequestObjectRootAsync(string callId, CancellationToken cancellationToken)
+        {
+            var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!_pendingObjectRoots.TryAdd(callId, completion))
+            {
+                throw new InvalidOperationException("该工具调用已有待处理的对象入口选择。");
+            }
+
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await _pushRaw(new
+                {
+                    kind = "tool-root-request",
+                    id = callId,
+                }).ConfigureAwait(false);
+
+                using (cancellationToken.Register(() => completion.TrySetCanceled()))
+                {
+                    return await completion.Task.ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                _pendingObjectRoots.TryRemove(callId, out _);
+            }
+        }
+
+        private Task<object> RespondObjectRootAsync(JObject payload)
+        {
+            var id = payload.Value<string>("id");
+            if (string.IsNullOrEmpty(id) || !_pendingObjectRoots.TryGetValue(id, out var completion))
+            {
+                return Task.FromResult<object>(new { accepted = false, reason = "该对象入口请求已失效" });
+            }
+
+            var cancelled = payload.Value<bool?>("cancelled") == true;
+            var root = payload.Value<string>("root");
+            if (!cancelled && root != "workbook" && root != "worksheet" && root != "window")
+            {
+                return Task.FromResult<object>(new { accepted = false, reason = "无效的对象入口" });
+            }
+
+            var accepted = completion.TrySetResult(cancelled ? null : root);
+            return Task.FromResult<object>(new { accepted, reason = accepted ? null : "该对象入口请求已处理" });
+        }
+
         /// <summary>
         /// 让所有挂起的审批以拒绝收束。
         /// 面板关闭或任务结束时必须调用，否则 Agent 侧会永久等待。
@@ -2181,6 +2234,14 @@ namespace ChatSheet.AddIn.Bridge
                 {
                     completion.TrySetResult(new ApprovalDecision { Approved = false, Reason = reason });
                 }
+            }
+        }
+
+        private void FailPendingObjectRoots()
+        {
+            foreach (var completion in _pendingObjectRoots.Values)
+            {
+                completion.TrySetResult(null);
             }
         }
 
@@ -2198,6 +2259,7 @@ namespace ChatSheet.AddIn.Bridge
             }
 
             FailPendingApprovals("面板已关闭");
+            FailPendingObjectRoots();
             _agent?.Tools.Undo.Clear();
         }
     }

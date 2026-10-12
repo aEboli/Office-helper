@@ -28,6 +28,7 @@ namespace ChatSheet.ToolTests
             Framing(report);
             Task.Run(() => NetworkCancellationAsync(report)).GetAwaiter().GetResult();
             Task.Run(() => ChannelLifetimeAsync(report)).GetAwaiter().GetResult();
+            Task.Run(() => ObjectRootRepairAsync(report)).GetAwaiter().GetResult();
         }
 
         private static void Storage(Action<string, bool, string> report)
@@ -157,6 +158,63 @@ namespace ChatSheet.ToolTests
                 var disposed = await Task.WhenAny(next, Task.Delay(2000));
                 report("关闭面板取消准备阶段与批量任务", disposed == next && bulk.IsCancellationRequested, null);
                 if (disposed == next) { await next; }
+            }
+        }
+
+        private static async Task ObjectRootRepairAsync(Action<string, bool, string> report)
+        {
+            var pushed = new List<object>();
+            using (var channels = new AgentChannels(
+                () => null,
+                _ => Task.CompletedTask,
+                message => { pushed.Add(message); return Task.CompletedTask; },
+                work => Task.FromResult(work()),
+                () => new Settings { Mode = ConnectionMode.AuthorizedInternational },
+                createAgent: false))
+            using (var cancellation = new CancellationTokenSource())
+            {
+                var handlers = new Dictionary<string, Func<JObject, Task<object>>>();
+                channels.Register(handlers);
+
+                var choose = channels.RequestObjectRootAsync("call-root", cancellation.Token);
+                var request = pushed.Count == 1 ? JObject.FromObject(pushed[0]) : new JObject();
+                report("缺失 root 时桥接请求与原工具调用 ID 关联",
+                    request.Value<string>("kind") == "tool-root-request"
+                        && request.Value<string>("id") == "call-root",
+                    null);
+
+                var invalid = JObject.FromObject(await handlers["tool.root.respond"](
+                    new JObject { ["id"] = "call-root", ["root"] = "application" }));
+                report("桥接拒绝不在白名单中的对象入口",
+                    invalid.Value<bool>("accepted") == false && !choose.IsCompleted,
+                    invalid.ToString(Newtonsoft.Json.Formatting.None));
+
+                var valid = JObject.FromObject(await handlers["tool.root.respond"](
+                    new JObject { ["id"] = "call-root", ["root"] = "worksheet" }));
+                var chosenRoot = await choose;
+                report("桥接接受合法对象入口并返回原等待调用",
+                    valid.Value<bool>("accepted") && chosenRoot == "worksheet",
+                    chosenRoot);
+
+                var cancelChoice = channels.RequestObjectRootAsync("call-root-cancel", cancellation.Token);
+                var cancelled = JObject.FromObject(await handlers["tool.root.respond"](
+                    new JObject { ["id"] = "call-root-cancel", ["cancelled"] = true }));
+                report("用户取消会收束原对象入口请求", cancelled.Value<bool>("accepted")
+                    && await cancelChoice == null, null);
+
+                using (var stopped = new CancellationTokenSource())
+                {
+                    var waiting = channels.RequestObjectRootAsync("call-root-stop", stopped.Token);
+                    stopped.Cancel();
+                    var cancellationObserved = false;
+                    try { await waiting; }
+                    catch (OperationCanceledException) { cancellationObserved = true; }
+                    report("任务停止能收束待处理的对象入口选择", cancellationObserved, null);
+                }
+
+                var late = JObject.FromObject(await handlers["tool.root.respond"](
+                    new JObject { ["id"] = "call-root-stop", ["root"] = "window" }));
+                report("取消后的迟到选择被拒绝", late.Value<bool>("accepted") == false, null);
             }
         }
     }

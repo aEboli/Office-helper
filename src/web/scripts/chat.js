@@ -497,6 +497,96 @@ function addToolCard(payload) {
   return card;
 }
 
+function updateToolCardArgs(payload) {
+  const card = transcript.querySelector(`.tool-card[data-tool-id="${payload.id}"]`);
+  const args = card?.querySelector('.tool-args');
+  if (args) { args.textContent = summarizeArgs(payload.args) || '（无参数）'; }
+}
+
+function addToolRootRepair(message) {
+  const card = transcript.querySelector(`.tool-card[data-tool-id="${message.id}"]`);
+  if (!card) {
+    addNotice('无法找到等待补全对象入口的工具卡；请停止并重试。', 'error');
+    return;
+  }
+
+  card.open = true;
+  const state = card.querySelector('.tool-state');
+  if (state) { state.textContent = '等待选择对象入口'; }
+
+  const body = card.querySelector('.tool-body');
+  const repair = document.createElement('div');
+  repair.className = 'tool-root-repair';
+
+  const prompt = document.createElement('div');
+  prompt.className = 'tool-root-prompt';
+  prompt.textContent = '此调用缺少对象入口。选择后将继续原操作；取消则不执行。';
+
+  const options = document.createElement('div');
+  options.className = 'tool-root-options';
+
+  const status = document.createElement('div');
+  status.className = 'tool-root-status';
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+
+  const choices = [
+    { value: 'workbook', label: '当前工作簿' },
+    { value: 'worksheet', label: '当前工作表' },
+    { value: 'window', label: '当前窗口' },
+  ];
+
+  const respond = async (root, cancelled = false) => {
+    for (const button of options.children) { button.disabled = true; }
+    status.textContent = cancelled ? '正在取消…' : '正在继续原操作…';
+    try {
+      const result = await request('tool.root.respond', { id: message.id, root, cancelled });
+      if (!result?.accepted) { throw new Error(result?.reason ?? '对象入口请求已失效'); }
+      repair.dataset.settled = 'true';
+      status.textContent = cancelled
+        ? '已取消；该操作未执行。'
+        : `已选择${choices.find((choice) => choice.value === root)?.label ?? '对象入口'}，继续执行…`;
+      if (state) { state.textContent = cancelled ? '已取消' : '继续执行…'; }
+    } catch (error) {
+      status.textContent = `无法提交选择：${error.message}`;
+      if (state) { state.textContent = '选择失败'; }
+    }
+  };
+
+  for (const choice of choices) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn';
+    button.textContent = choice.label;
+    button.addEventListener('click', () => void respond(choice.value));
+    options.append(button);
+  }
+
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'btn btn-danger';
+  cancel.textContent = '取消操作';
+  cancel.addEventListener('click', () => void respond(null, true));
+  options.append(cancel);
+
+  repair.append(prompt, options, status);
+  body.append(repair);
+  scrollToBottom();
+}
+
+function settlePendingToolRootRepairs(message) {
+  for (const card of transcript.querySelectorAll('.tool-card')) {
+    const repair = card.querySelector('.tool-root-repair');
+    if (!repair || repair.dataset.settled === 'true') { continue; }
+    repair.dataset.settled = 'true';
+    for (const button of repair.querySelectorAll('button')) { button.disabled = true; }
+    const status = repair.querySelector('.tool-root-status');
+    if (status) { status.textContent = message; }
+    const state = card.querySelector('.tool-state');
+    if (state) { state.textContent = '未执行'; }
+  }
+}
+
 /**
  * 描述二维数据的尺寸。
  *
@@ -2204,6 +2294,9 @@ function handleAgent(message) {
       finishToolCard(message.payload ?? {});
       showPending();
       break;
+    case 'tool-args-updated':
+      updateToolCardArgs(message.payload ?? {});
+      break;
     case 'document-draft':
       addDocumentDraft(message.payload ?? {});
       break;
@@ -2253,10 +2346,12 @@ function handleAgent(message) {
       addNotice(message.text ?? '已达步数上限。', 'warn');
       break;
     case 'stopped':
+      settlePendingToolRootRepairs('任务已停止；该操作未执行。');
       clearPending();
       addNotice(message.text ?? '已停止。', 'warn');
       break;
     case 'error':
+      settlePendingToolRootRepairs('任务失败；该操作未执行。');
       clearPending();
       addNotice(message.text ?? '发生错误。', 'error');
       break;
@@ -2662,6 +2757,7 @@ export function initChat() {
 
   on('agent', handleAgent);
   on('approval-request', addApprovalCard);
+  on('tool-root-request', addToolRootRepair);
 
   // 就绪检查交由路由切换统一触发，此处不再调用，避免启动时重复请求。
 }

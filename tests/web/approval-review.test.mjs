@@ -197,6 +197,7 @@ function push(payload) {
 }
 
 const approvals = () => transcript.children.filter((n) => n.classes?.has('approval'));
+const toolCards = () => transcript.children.filter((n) => n.classes?.has('tool-card'));
 const lastApproval = () => approvals()[approvals().length - 1];
 const findIn = (card, cls) => descendants(card).find((n) => n.classes?.has(cls));
 const allIn = (card, cls) => descendants(card).filter((n) => n.classes?.has(cls));
@@ -207,6 +208,73 @@ const click = (node) => node?.listeners.get('click')?.({
   preventDefault: () => {},
   stopPropagation: () => {},
 });
+
+console.log('检查缺少 root 的工具调用补全：');
+
+push({
+  kind: 'agent',
+  stage: 'tool-start',
+  payload: { id: 'call-root', name: 'excel_object', args: { path: [], action: 'get', member: 'Name' } },
+});
+push({ kind: 'tool-root-request', id: 'call-root' });
+await tick();
+
+const rootCard = toolCards().find((item) => item.dataset.toolId === 'call-root');
+const rootChoices = allIn(rootCard, 'tool-root-options')[0]?.children ?? [];
+check('缺 root 时展开原工具卡等待选择', Boolean(rootCard?.open)
+  && textIn(rootCard, 'tool-state').includes('等待选择'));
+check('显示三个对象入口和取消按钮', rootChoices.length === 4
+  && rootChoices.map((item) => item.textContent).join('|')
+    === '当前工作簿|当前工作表|当前窗口|取消操作');
+
+click(rootChoices[1]);
+await tick();
+const rootChoice = [...posted].reverse().find((item) => item.channel === 'tool.root.respond');
+check('选择工作表时回传原调用 ID 和白名单值', rootChoice?.payload?.id === 'call-root'
+  && rootChoice.payload.root === 'worksheet' && rootChoice.payload.cancelled === false,
+  JSON.stringify(rootChoice?.payload));
+hostHandler({ data: { kind: 'response', id: rootChoice.id, ok: true, data: { accepted: true } } });
+await tick();
+push({
+  kind: 'agent',
+  stage: 'tool-args-updated',
+  payload: { id: 'call-root', args: { root: 'worksheet', path: [], action: 'get', member: 'Name' } },
+});
+await tick();
+check('同一卡片显示补全后的 root', textIn(rootCard, 'tool-args').includes('root: worksheet'));
+check('选择后选项不可重复提交', rootChoices.every((item) => item.disabled));
+
+push({
+  kind: 'agent',
+  stage: 'tool-start',
+  payload: { id: 'call-root-cancel', name: 'excel_object', args: { path: [], action: 'get', member: 'Name' } },
+});
+push({ kind: 'tool-root-request', id: 'call-root-cancel' });
+await tick();
+const cancelCard = toolCards().find((item) => item.dataset.toolId === 'call-root-cancel');
+click(buttonIn(cancelCard, '取消操作'));
+await tick();
+const rootCancel = [...posted].reverse().find((item) => item.channel === 'tool.root.respond');
+check('取消会回传取消标记而不附加 root', rootCancel?.payload?.id === 'call-root-cancel'
+  && rootCancel.payload.cancelled === true && rootCancel.payload.root === null,
+  JSON.stringify(rootCancel?.payload));
+hostHandler({ data: { kind: 'response', id: rootCancel.id, ok: true, data: { accepted: true } } });
+await tick();
+check('取消后原卡片明确说明没有执行', textIn(cancelCard, 'tool-root-status').includes('该操作未执行'));
+
+push({
+  kind: 'agent',
+  stage: 'tool-start',
+  payload: { id: 'call-root-stop', name: 'excel_object', args: { path: [], action: 'get', member: 'Name' } },
+});
+push({ kind: 'tool-root-request', id: 'call-root-stop' });
+await tick();
+const stoppedRootCard = toolCards().find((item) => item.dataset.toolId === 'call-root-stop');
+push({ kind: 'agent', stage: 'stopped', text: '已停止生成。' });
+await tick();
+check('停止任务会关闭入口选项并说明未执行',
+  allIn(stoppedRootCard, 'tool-root-options')[0].children.every((item) => item.disabled)
+    && textIn(stoppedRootCard, 'tool-root-status').includes('该操作未执行'));
 
 console.log('检查审批卡的可见性与授权语义：');
 

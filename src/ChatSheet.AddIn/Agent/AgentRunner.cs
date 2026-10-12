@@ -251,14 +251,15 @@ namespace ChatSheet.AddIn.Agent
             Func<AgentUpdate, Task> onUpdate,
             Func<ToolDefinition, JObject, ImpactEstimate, Task<ApprovalDecision>> requestApproval,
             CancellationToken cancellationToken,
-            IReadOnlyList<ImageAttachment> images = null)
+            IReadOnlyList<ImageAttachment> images = null,
+            Func<string, Task<string>> requestObjectRoot = null)
         {
             _turnCancellation = cancellationToken;
             cancellationToken.ThrowIfCancellationRequested();
             _turnWorkbook = (WorkbookTarget)await _uiInvoker(() => WorkbookTarget.Capture(_applicationAccessor())).ConfigureAwait(false);
             try
             {
-                await RunCoreAsync(userInput, settings, onUpdate, requestApproval, cancellationToken, images).ConfigureAwait(false);
+                await RunCoreAsync(userInput, settings, onUpdate, requestApproval, cancellationToken, images, requestObjectRoot).ConfigureAwait(false);
             }
             finally
             {
@@ -274,7 +275,8 @@ namespace ChatSheet.AddIn.Agent
             Func<AgentUpdate, Task> onUpdate,
             Func<ToolDefinition, JObject, ImpactEstimate, Task<ApprovalDecision>> requestApproval,
             CancellationToken cancellationToken,
-            IReadOnlyList<ImageAttachment> images = null)
+            IReadOnlyList<ImageAttachment> images,
+            Func<string, Task<string>> requestObjectRoot)
         {
             // 只带图片不写文字也应允许：贴一张截图问「这个怎么填」是常见用法。
             if (string.IsNullOrWhiteSpace(userInput) && (images == null || images.Count == 0))
@@ -526,7 +528,7 @@ namespace ChatSheet.AddIn.Agent
                     foreach (var call in pendingCalls)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        await ExecuteOneAsync(call, settings, onUpdate, requestApproval).ConfigureAwait(false);
+                        await ExecuteOneAsync(call, settings, onUpdate, requestApproval, requestObjectRoot).ConfigureAwait(false);
                     }
                 }
 
@@ -1049,12 +1051,13 @@ namespace ChatSheet.AddIn.Agent
             ToolCall call,
             Settings settings,
             Func<AgentUpdate, Task> onUpdate,
-            Func<ToolDefinition, JObject, ImpactEstimate, Task<ApprovalDecision>> requestApproval)
+            Func<ToolDefinition, JObject, ImpactEstimate, Task<ApprovalDecision>> requestApproval,
+            Func<string, Task<string>> requestObjectRoot)
         {
             _operationWorkbook = (WorkbookTarget)await InvokeForWorkbookAsync(() => WorkbookTarget.Capture(_applicationAccessor())).ConfigureAwait(false);
             try
             {
-                await ExecuteOneCoreAsync(call, settings, onUpdate, requestApproval).ConfigureAwait(false);
+                await ExecuteOneCoreAsync(call, settings, onUpdate, requestApproval, requestObjectRoot).ConfigureAwait(false);
             }
             finally
             {
@@ -1068,7 +1071,8 @@ namespace ChatSheet.AddIn.Agent
             ToolCall call,
             Settings settings,
             Func<AgentUpdate, Task> onUpdate,
-            Func<ToolDefinition, JObject, ImpactEstimate, Task<ApprovalDecision>> requestApproval)
+            Func<ToolDefinition, JObject, ImpactEstimate, Task<ApprovalDecision>> requestApproval,
+            Func<string, Task<string>> requestObjectRoot)
         {
             // 文本协议下的指令块可能连工具名都没写出来（例如整块 JSON 被截断）。
             // 这时说「未知工具：」会让模型以为自己拼错了名字，转而换个名字重发；
@@ -1137,6 +1141,45 @@ namespace ChatSheet.AddIn.Agent
                     args,
                 },
             }).ConfigureAwait(false);
+
+            if (string.Equals(call.Name, "excel_object", StringComparison.Ordinal)
+                && string.IsNullOrWhiteSpace(args.Value<string>("root")))
+            {
+                if (requestObjectRoot == null)
+                {
+                    await FeedToolResultAsync(
+                        call,
+                        ToolResult.Failure("ARG_MISSING", "缺少必需参数 root，无法选择对象入口。"),
+                        onUpdate).ConfigureAwait(false);
+                    return;
+                }
+
+                var root = await requestObjectRoot(call.Id).ConfigureAwait(false);
+                if (string.IsNullOrEmpty(root))
+                {
+                    await FeedToolResultAsync(
+                        call,
+                        ToolResult.Failure("ROOT_SELECTION_CANCELLED", "已取消对象入口选择；该操作未执行。"),
+                        onUpdate).ConfigureAwait(false);
+                    return;
+                }
+
+                if (root != "workbook" && root != "worksheet" && root != "window")
+                {
+                    await FeedToolResultAsync(
+                        call,
+                        ToolResult.Failure("ARG_INVALID", "对象入口必须是 workbook、worksheet 或 window。"),
+                        onUpdate).ConfigureAwait(false);
+                    return;
+                }
+
+                args["root"] = root;
+                await onUpdate(new AgentUpdate
+                {
+                    Kind = "tool-args-updated",
+                    Payload = new { id = call.Id, args },
+                }).ConfigureAwait(false);
+            }
 
             if (definition.RequiresApproval && !IsAutomaticApproval())
             {

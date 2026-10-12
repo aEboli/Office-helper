@@ -983,6 +983,35 @@ body {
 .tool-state.is-error { color: var(--error); }
 .tool-state.is-undone { color: var(--text-muted); text-decoration: line-through; }
 
+.tool-root-repair {
+  margin-top: 8px;
+  padding: 7px 8px;
+  border-left: 2px solid var(--warn-border);
+  background: var(--warn-bg);
+}
+
+.tool-root-prompt,
+.tool-root-status {
+  font-size: 11px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.tool-root-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.tool-root-options .btn {
+  min-height: 28px;
+}
+
+.tool-root-status {
+  color: var(--text-muted);
+}
+
 /* 撤销按钮位于摘要行右端，与操作同行，不必展开即可点。 */
 .tool-actions {
   flex: 0 0 auto;
