@@ -92,6 +92,32 @@ namespace ChatSheet.AddIn.Providers
                 Content = content,
                 IsTextProtocolToolResult = true,
             };
+
+        /// <summary>
+        /// 复制一条消息，只替换附带的工具调用，正文可选替换。
+        ///
+        /// 请求修复要摘掉没有结果的调用，但不能就地改历史：面板上的操作卡片与
+        /// 撤销按钮都还按原对象登记着，改掉它等于让记录和界面各说一套。
+        /// </summary>
+        internal ChatMessage CloneWithToolCalls(IReadOnlyList<ToolCall> calls, string content = null)
+        {
+            var clone = new ChatMessage
+            {
+                Role = Role,
+                Content = content ?? Content,
+                ToolCallId = ToolCallId,
+                ToolName = ToolName,
+                IsTextProtocolToolResult = IsTextProtocolToolResult,
+            };
+
+            if (calls != null)
+            {
+                clone.ToolCalls.AddRange(calls);
+            }
+
+            clone.Images.AddRange(Images);
+            return clone;
+        }
     }
 
     /// <summary>Chat Completions 上输出上限的字段名。</summary>

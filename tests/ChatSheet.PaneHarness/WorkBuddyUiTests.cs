@@ -107,7 +107,9 @@ namespace ChatSheet.PaneHarness
                         var connectionMode = await core.ExecuteScriptAsync("window.__wbSettings?.mode || ''");
                         Check(authorizationStatus == "\"authorized\"" || authorizationStatus == "\"unauthorized\"" || authorizationStatus == "\"unavailable\"",
                             "authorization state is explicit");
-                        Check(await core.ExecuteScriptAsync("document.getElementById('app-version').textContent === '0.10.3.13'") == "true", "Arabic version 0.10.3.13 without prefix");
+                        // 版本号每次发版都会变，写死常量必然滞后（原先是 0.10.3.13，装的是 0.10.3.19）；
+                        // 改为读页面自己的 data-version，只断言「无前缀四段构建号」且文本与 data-version 一致。
+                        Check(await core.ExecuteScriptAsync("(() => { const n = document.getElementById('app-version'); const v = n && n.dataset.version; return !!v && /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(v) && n.textContent === v; })()") == "true", "version label is a bare four-part build number equal to data-version");
                         if (authorizationStatus == "\"authorized\"")
                         {
                             await core.ExecuteScriptAsync("document.getElementById('picker-trigger').click()");

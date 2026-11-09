@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
+using Newtonsoft.Json.Linq;
 
 namespace ChatSheet.AddIn.Tools
 {
@@ -37,6 +39,164 @@ namespace ChatSheet.AddIn.Tools
         internal object Parameters { get; }
 
         internal bool RequiresApproval => Risk != ToolRisk.Read;
+
+        // 在审批和快照预处理前校验必填项及顶层类型；具体内容仍由各工具校验。
+        internal ToolResult ValidateArguments(JObject args)
+        {
+            return ValidateArguments(args, null);
+        }
+
+        /// <summary>
+        /// 带跳过集合的校验：<paramref name="skip"/> 里的键完全不做检查（必填与类型都跳过）。
+        ///
+        /// 存在的理由是 excel_object 的 root：它是必填项，但缺省时会由宿主弹一次
+        /// 「选哪一层」把值补上。必须在弹窗之前先把其余参数（path/action/member）
+        /// 验完——否则模型少写 path，用户白点一次才收到 ARG_MISSING，
+        /// 而那次点击换不来任何结果。
+        /// </summary>
+        internal ToolResult ValidateArguments(JObject args, IReadOnlyCollection<string> skip)
+        {
+            args = args ?? new JObject();
+            var schema = JObject.FromObject(Parameters);
+
+            var requiredKeys = new HashSet<string>(StringComparer.Ordinal);
+            if (schema["required"] is JArray required)
+            {
+                foreach (var key in required.Values<string>())
+                {
+                    requiredKeys.Add(key);
+                    if (IsSkipped(skip, key)) { continue; }
+
+                    var value = args[key];
+                    if (value == null || value.Type == JTokenType.Null
+                        || (value.Type == JTokenType.String && string.IsNullOrWhiteSpace(value.Value<string>())))
+                    {
+                        return ToolResult.Failure("ARG_MISSING", $"缺少必需参数 {key}。请按工具参数定义补全后重试。");
+                    }
+                }
+            }
+
+            if (!(schema["properties"] is JObject properties))
+            {
+                return null;
+            }
+
+            foreach (var parameter in args.Properties())
+            {
+                if (IsSkipped(skip, parameter.Name)) { continue; }
+
+                // schema 里只有对象形态的条目才有 type；形状不对就交给工具自己报错，
+                // 不在这一层抛异常——校验层崩掉会让整轮对话失败。
+                if (!(properties[parameter.Name] is JObject property)) { continue; }
+                var type = property["type"];
+                if (type == null) { continue; }
+
+                var types = type is JArray array ? array.Values<string>().ToArray() : new[] { type.Value<string>() };
+
+                // 非必填参数写 null 等于「没提供」。执行层本来就是这么读的
+                // （OptionalBool 见 null 返回 null、args.Value<T?> 见 null 返回 null），
+                // 这里若按 schema 的 type 严格拒绝，就会出现「校验比执行更严」：
+                // 模型把可选项写成 null 被 ARG_INVALID 挡下，换个写法重发又能过，白烧一轮。
+                if (parameter.Value.Type == JTokenType.Null && !requiredKeys.Contains(parameter.Name))
+                {
+                    continue;
+                }
+
+                if (!MatchesType(types, parameter.Value))
+                {
+                    return ToolResult.Failure(
+                        "ARG_INVALID",
+                        $"参数 {parameter.Name} 必须为 {string.Join(" 或 ", types)}，实际为 {DescribeValue(parameter.Value)}。请按工具参数定义重试。");
+                }
+            }
+
+            return null;
+        }
+
+        private static bool IsSkipped(IReadOnlyCollection<string> skip, string name)
+        {
+            return skip != null && skip.Contains(name, StringComparer.Ordinal);
+        }
+
+        /// <summary>
+        /// 顶层类型是否可接受。
+        ///
+        /// 标量放宽到执行层同一口径：工具里读的是 args.Value&lt;long?&gt;()、
+        /// Value&lt;double?&gt;()、Value&lt;bool&gt;()，Newtonsoft 会先做一次字符串转换，
+        /// 因此 "0"、"12.5"、"true"/"false" 在执行层是能读出来的。
+        /// 校验若比执行更严，模型只是换了个等价写法就被拒，而错误里说的
+        /// 「必须为 integer」又和工具实际行为不符，它只会把同一个值反复改写。
+        ///
+        /// 数组与对象不在此列：它们没有无歧义的字符串形态，
+        /// 放行只会把错误推迟到更深的地方，且更难解释。
+        /// </summary>
+        private static bool MatchesType(string[] types, JToken value)
+        {
+            var valueType = value.Type;
+            foreach (var t in types)
+            {
+                switch (t)
+                {
+                    case "string":
+                        if (valueType == JTokenType.String) { return true; }
+                        break;
+                    case "array":
+                        if (valueType == JTokenType.Array) { return true; }
+                        break;
+                    case "object":
+                        if (valueType == JTokenType.Object) { return true; }
+                        break;
+                    case "null":
+                        if (valueType == JTokenType.Null) { return true; }
+                        break;
+                    case "boolean":
+                        if (valueType == JTokenType.Boolean) { return true; }
+                        if (valueType == JTokenType.String && bool.TryParse(value.Value<string>(), out _)) { return true; }
+                        break;
+                    case "integer":
+                        // 整数值的浮点（12.0）执行层也能读成 long，按「无损」放行；
+                        // 12.5 会丢小数，仍按类型错误拒绝。
+                        if (valueType == JTokenType.Integer) { return true; }
+                        if (valueType == JTokenType.Float && IsIntegral(value.Value<double>())) { return true; }
+                        if (valueType == JTokenType.String
+                            && long.TryParse(value.Value<string>(), NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
+                        {
+                            return true;
+                        }
+                        break;
+                    case "number":
+                        if (valueType == JTokenType.Integer || valueType == JTokenType.Float) { return true; }
+                        if (valueType == JTokenType.String
+                            && double.TryParse(value.Value<string>(), NumberStyles.Float | NumberStyles.AllowThousands,
+                                CultureInfo.InvariantCulture, out _))
+                        {
+                            return true;
+                        }
+                        break;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsIntegral(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value) && Math.Truncate(value) == value;
+        }
+
+        /// <summary>错误信息里的实际取值。字符串要带出来，否则模型只知道「不对」。</summary>
+        private static string DescribeValue(JToken value)
+        {
+            if (value == null) { return "null"; }
+            if (value.Type == JTokenType.String)
+            {
+                var text = value.Value<string>() ?? string.Empty;
+                if (text.Length > 40) { text = text.Substring(0, 40) + "…"; }
+                return $"字符串 \"{text}\"";
+            }
+
+            return value.Type.ToString();
+        }
     }
 
     /// <summary>
@@ -68,9 +228,12 @@ namespace ChatSheet.AddIn.Tools
             return new { type = new[] { "string", "null" }, description };
         }
 
-        private static object Bool(string description)
+        // 可空布尔：OptionalBool 读 null 时按「未提供」处理，
+        // schema 里也必须承认 null，否则校验层与执行层的口径就不一致
+        // （模型按要求写 null 表达「不改这一项」，却被 ARG_INVALID 挡下）。
+        private static object OptBool(string description)
         {
-            return new { type = "boolean", description };
+            return new { type = new[] { "boolean", "null" }, description };
         }
 
         private static readonly object SheetProp = OptStr("工作表名称。省略则使用当前活动工作表。");
@@ -114,7 +277,7 @@ namespace ChatSheet.AddIn.Tools
                     {
                         range = Str("范围地址，例如 A1:D20。"),
                         sheet = SheetProp,
-                        include_formulas = Bool("为真时同时返回公式文本，而不只是计算结果。"),
+                        include_formulas = OptBool("为真时同时返回公式文本，而不只是计算结果。"),
                         offset = new { type = "integer", description = "按行遍历的单元格偏移，默认 0，续页使用 next_offset。" },
                     },
                     "range")),
@@ -227,7 +390,7 @@ namespace ChatSheet.AddIn.Tools
                     {
                         range = Str("要合并的范围地址，例如 A1:D1。必须多于一个单元格。"),
                         sheet = SheetProp,
-                        across = Bool(
+                        across = OptBool(
                             "为真时逐行分别合并（每行合成一格，行与行不相连），为假或省略时整片合成一格。"),
                         horizontal_alignment =
                             OptStr("同时设置水平对齐：left、center、right。省略则保持原有对齐。"),
@@ -297,8 +460,8 @@ namespace ChatSheet.AddIn.Tools
                         range = Str("待排序范围地址，应包含数据区域。"),
                         sheet = SheetProp,
                         key_column = Str("排序依据的列字母，例如 B。必须落在 range 之内。"),
-                        ascending = Bool("为真升序，为假降序。"),
-                        has_header = Bool("范围首行是否为标题行。"),
+                        ascending = OptBool("为真升序，为假降序。"),
+                        has_header = OptBool("范围首行是否为标题行。"),
                     },
                     "range", "key_column")),
 
@@ -312,7 +475,7 @@ namespace ChatSheet.AddIn.Tools
                         range = Str("表格范围地址，应包含标题行。"),
                         sheet = SheetProp,
                         name = OptStr("表格名称。省略则由宿主自动命名。"),
-                        has_header = Bool("首行是否为标题行。"),
+                        has_header = OptBool("首行是否为标题行。"),
                     },
                     "range")),
 

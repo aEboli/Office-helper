@@ -180,6 +180,7 @@ namespace ChatSheet.AddIn.Providers
     internal sealed class OpenAiResponsesStreamParser : StreamParser
     {
         private readonly Dictionary<string, ToolCall> _byItemId = new Dictionary<string, ToolCall>(StringComparer.Ordinal);
+        private readonly HashSet<string> _deliveredItems = new HashSet<string>(StringComparer.Ordinal);
 
         internal override IEnumerable<ChatEvent> Parse(SseFrame frame)
         {
@@ -216,18 +217,7 @@ namespace ChatSheet.AddIn.Providers
 
                 case "response.output_item.added":
                 {
-                    var item = root["item"] as JObject;
-                    if (string.Equals(item?.Value<string>("type"), "function_call", StringComparison.Ordinal))
-                    {
-                        var itemId = item.Value<string>("id") ?? Guid.NewGuid().ToString("N");
-                        _byItemId[itemId] = new ToolCall
-                        {
-                            Id = item.Value<string>("call_id") ?? itemId,
-                            Name = item.Value<string>("name"),
-                            ArgumentsJson = string.Empty,
-                        };
-                    }
-
+                    UpdateFunctionItem(root["item"] as JObject);
                     break;
                 }
 
@@ -243,25 +233,39 @@ namespace ChatSheet.AddIn.Providers
                     break;
                 }
 
-                case "response.output_item.done":
+                case "response.function_call_arguments.done":
                 {
-                    var itemId = (root["item"] as JObject)?.Value<string>("id");
+                    var itemId = root.Value<string>("item_id");
                     if (itemId != null && _byItemId.TryGetValue(itemId, out var call))
                     {
-                        _byItemId.Remove(itemId);
-                        if (!string.IsNullOrEmpty(call.Name))
-                        {
-                            yield return new ChatEvent { Kind = ChatEventKind.ToolCall, Call = call };
-                        }
+                        var arguments = root.Value<string>("arguments");
+                        if (arguments != null) { call.ArgumentsJson = arguments; }
                     }
+                    break;
+                }
 
+                case "response.output_item.done":
+                {
+                    var item = root["item"] as JObject;
+                    var call = UpdateFunctionItem(item);
+                    var itemId = item?.Value<string>("id");
+                    if (call != null && !string.IsNullOrEmpty(call.Name) && _deliveredItems.Add(itemId))
+                    {
+                        _byItemId.Remove(itemId);
+                        yield return new ChatEvent { Kind = ChatEventKind.ToolCall, Call = call };
+                    }
                     break;
                 }
 
                 case "response.completed":
                 case "response.incomplete":
                 {
-                    var usage = (root["response"] as JObject)?["usage"] as JObject;
+                    var response = root["response"] as JObject;
+                    if (response?["output"] is JArray output)
+                    {
+                        foreach (var item in output) { UpdateFunctionItem(item as JObject); }
+                    }
+                    var usage = response?["usage"] as JObject;
                     if (usage != null)
                     {
                         yield return new ChatEvent
@@ -277,19 +281,44 @@ namespace ChatSheet.AddIn.Providers
                     break;
                 }
 
+                case "response.failed":
                 case "error":
                 {
-                    var message = (root["error"] as JObject)?.Value<string>("message") ?? "服务端返回错误";
-                    throw new ProviderException("STREAM_ERROR", message);
+                    _byItemId.Clear();
+                    var error = (root["response"] as JObject)?["error"] as JObject ?? root["error"] as JObject;
+                    var message = error?.Value<string>("message") ?? root.Value<string>("message") ?? "服务端返回错误";
+                    var code = error?.Value<string>("code") ?? root.Value<string>("code");
+                    throw new ProviderException("STREAM_ERROR", message)
+                    {
+                        Detail = string.IsNullOrEmpty(code) ? message : code + "：" + message,
+                    };
                 }
             }
         }
 
+        private ToolCall UpdateFunctionItem(JObject item)
+        {
+            var itemId = item?.Value<string>("id");
+            if (string.IsNullOrEmpty(itemId) || _deliveredItems.Contains(itemId)) { return null; }
+            if (!_byItemId.TryGetValue(itemId, out var call))
+            {
+                if (item.Value<string>("type") != "function_call") { return null; }
+                call = new ToolCall { Id = itemId, ArgumentsJson = string.Empty };
+                _byItemId[itemId] = call;
+            }
+            call.Id = item.Value<string>("call_id") ?? call.Id;
+            call.Name = item.Value<string>("name") ?? call.Name;
+            // done 事件携带完整快照，必须替换增量，不能再次拼接。
+            call.ArgumentsJson = item.Value<string>("arguments") ?? call.ArgumentsJson;
+            return call;
+        }
+
         internal override IEnumerable<ChatEvent> Flush()
         {
-            foreach (var call in _byItemId.Values)
+            foreach (var item in _byItemId)
             {
-                if (!string.IsNullOrEmpty(call.Name))
+                var call = item.Value;
+                if (!string.IsNullOrEmpty(call.Name) && _deliveredItems.Add(item.Key))
                 {
                     yield return new ChatEvent { Kind = ChatEventKind.ToolCall, Call = call };
                 }

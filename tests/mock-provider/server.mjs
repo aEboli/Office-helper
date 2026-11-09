@@ -26,6 +26,11 @@
 //   场景 deepseek-flash 首个请求直接走文本指令块，验证型号兼容提示不会发送 tools。
 //   场景 novision 带图片的请求以 400 拒绝，不带则正常回文本。
 //              用于验证视觉回退：去图重发或经中转模型转写后继续。
+//   场景 native-to-text 第一轮接受原生 tools 并下发一次调用；第二轮仍带 tools
+//              时以 400 拒绝（迫使加载项降级为文本协议）；降级后的请求若还带着
+//              role:"tool" / tool_calls 这类原生痕迹而顶层没有 tools 声明，
+//              也以 400 拒绝，措辞照抄真实网关。用于验证「原生跑过几步后切 Text」
+//              时历史里的工具痕迹会被降级成纯文本。
 
 import { createServer } from 'node:http';
 
@@ -237,6 +242,66 @@ const server = createServer((req, res) => {
       return;
     }
 
+    // 文本指令协议下不该出现原生 tool_calls：助手消息一旦带调用却没有对应的
+    // tool 结果，真实服务端会整轮拒绝（OpenAI 400 "An assistant message with
+    // 'tool_calls' must be followed by tool messages…"，网关 502 "No tool output
+    // found for function call fc_txt1-739998."）。这里照抄这条判据，让「合成调用
+    // 漏进请求」在端到端跑一次就撞得出来，而不是等用户换模型时才炸。
+    if ((scenario === 'notool' || scenario === 'toolrefusal' || scenario === 'deepseek-flash')
+      && messages.some((m) => m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0)) {
+      console.log('[mock] text-protocol: assistant tool_calls leaked without results');
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: {
+          message: "An assistant message with 'tool_calls' must be followed by tool messages " +
+            "responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message)",
+        },
+      }));
+      return;
+    }
+
+    // native-to-text：原生跑过几步后切到文本协议，历史里的工具痕迹必须被降级。
+    //
+    // 两个 400 各自对应这条链路上的一次真故障：
+    //   1. 降级后仍带着 role:"tool" / tool_calls 却不再声明 tools —— 严格网关整轮拒绝。
+    //      措辞照抄真实网关（OpenAI 的 400 与中转网关的 502 都是这句的变体）。
+    //   2. 还没降级（第二轮仍声明 tools）—— 照实拒绝，让加载项走真实的能力回退路径，
+    //      而不是靠脚本替它切形态。
+    if (scenario === 'native-to-text') {
+      const declaresTools = (parsed.tools ?? []).length > 0;
+      const traceCount = messages.filter((m) =>
+        m.role === 'tool' ||
+        (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0)).length;
+
+      if (traceCount > 0 && !declaresTools) {
+        console.log(
+          `[mock] native-to-text: ${traceCount} native tool trace(s) without tools declaration`,
+        );
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: {
+            code: 'invalid_request_error',
+            type: 'invalid_request_error',
+            message: "Invalid request: messages with role 'tool' or assistant 'tool_calls' require " +
+              "the top-level 'tools' parameter. An assistant message with 'tool_calls' must be " +
+              "followed by tool messages responding to each 'tool_call_id'. " +
+              "(insufficient tool messages following tool_calls message)",
+          },
+        }));
+        return;
+      }
+
+      // 第二轮仍声明 tools：按真实网关的口径拒绝，加载项应据此降级。
+      if (declaresTools && hasToolResult) {
+        console.log(`[mock] native-to-text: retry still declares tools (attempt ${chatAttempts}) -> 400`);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: { message: 'This model does not support tools / function calling.' },
+        }));
+        return;
+      }
+    }
+
     // 只要请求里带 tools 就拒绝，措辞照抄真实网关。
     // 加载项应当据此改用文本指令协议，而不是把整轮报失败。
     if (scenario === 'notool' && (parsed.tools ?? []).length > 0) {
@@ -350,6 +415,55 @@ const server = createServer((req, res) => {
 
         sse(res, finish('stop'));
         sse(res, usage(240, 30));
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+
+      // native-to-text：第一轮走原生工具调用（历史里因此留下 tool_calls 与
+      // role:"tool"），第二轮由上面的预检逼加载项降级，之后按文本协议收尾。
+      if (scenario === 'native-to-text') {
+        const declaresTools = (parsed.tools ?? []).length > 0;
+        const traceCount = messages.filter((m) => m.role === 'tool').length;
+
+        // 轮次按「这次声明了 tools 吗」认，不按收到的 tool 消息条数：
+        // 降级成功之后请求里已经一条 role:"tool" 都不剩（正是我们要验的结果），
+        // 按条数认会把它读成第一轮，再下发一次原生调用，反而把链路带偏。
+        if (declaresTools && !hasToolResult) {
+          console.log('[mock] native-to-text: round 1, issuing native tool call');
+          sse(res, textFrame('我先用原生方式写一下表头。'));
+          await new Promise((r) => setTimeout(r, 60));
+          sse(res, {
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: 'call_native_1',
+                  type: 'function',
+                  function: {
+                    name: 'write_values',
+                    arguments: '{"range":"A1:B1","values":[["名称","数量"]]}',
+                  },
+                }],
+              },
+            }],
+          });
+          sse(res, finish('tool_calls'));
+          sse(res, usage(140, 40));
+          res.write('data: [DONE]\n\n');
+          res.end();
+          return;
+        }
+
+        console.log(`[mock] native-to-text: round 2, text protocol (tools=${(parsed.tools ?? []).length}, toolTraces=${traceCount})`);
+        for (const piece of '已改用文本指令方式，A1:B1 已写入。'.match(/.{1,5}/gs) ?? []) {
+          await new Promise((r) => setTimeout(r, 30));
+          sse(res, textFrame(piece));
+        }
+
+        sse(res, finish('stop'));
+        sse(res, usage(180, 25));
         res.write('data: [DONE]\n\n');
         res.end();
         return;

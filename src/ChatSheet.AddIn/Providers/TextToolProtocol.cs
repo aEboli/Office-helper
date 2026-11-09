@@ -35,9 +35,7 @@ namespace ChatSheet.AddIn.Providers
         /// <summary>
         /// 工具清单的紧凑签名文本。
         ///
-        /// 不用完整 JSON Schema：原生声明约 2100 token，弱模型在这个体量下
-        /// 反而读不出重点。紧凑签名约 700 token，且把「必填/可选」直接标在
-        /// 参数名上，比嵌套的 required 数组更容易照着写对。
+        /// 保留参数名、类型和必填/可选标记；通用对象入口另保留完整路径约定。
         /// </summary>
         internal static string CatalogText()
         {
@@ -55,14 +53,14 @@ namespace ChatSheet.AddIn.Providers
                     builder.Append("（写操作，可能需要用户批准）");
                 }
 
-                builder.Append('：').Append(FirstSentence(tool.Description));
+                builder.Append('：').Append(tool.Name == "excel_object" ? tool.Description : FirstSentence(tool.Description));
                 builder.AppendLine();
             }
 
             return builder.ToString().TrimEnd();
         }
 
-        /// <summary>参数名清单，可选参数带 ? 后缀。</summary>
+        /// <summary>参数名与类型清单，可选参数带 ? 后缀。</summary>
         private static IReadOnlyList<string> ParameterNames(ToolDefinition tool)
         {
             var names = new List<string>();
@@ -87,7 +85,10 @@ namespace ChatSheet.AddIn.Providers
 
                 foreach (var property in properties.Properties())
                 {
-                    names.Add(required.Contains(property.Name) ? property.Name : property.Name + "?");
+                    var type = property.Value["type"];
+                    var typeName = type is JArray types ? string.Join("|", types.Values<string>()) : type?.Value<string>();
+                    names.Add((required.Contains(property.Name) ? property.Name : property.Name + "?")
+                        + (string.IsNullOrEmpty(typeName) ? string.Empty : ":" + typeName));
                 }
             }
             catch
@@ -174,11 +175,17 @@ namespace ChatSheet.AddIn.Providers
                 return false;
             }
 
-            var name = json.Value<string>("tool") ?? json.Value<string>("name");
+            var nameToken = json["tool"] ?? json["name"];
+            var name = nameToken?.Type == JTokenType.String ? nameToken.Value<string>() : null;
             var args = json["args"] ?? json["arguments"] ?? json["parameters"];
 
             if (string.IsNullOrWhiteSpace(name))
             {
+                if (tagged)
+                {
+                    call = new TextToolCall { ArgumentsJson = body.Trim() };
+                    return true;
+                }
                 return false;
             }
 

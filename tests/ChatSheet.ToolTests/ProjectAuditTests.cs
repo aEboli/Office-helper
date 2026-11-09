@@ -67,7 +67,7 @@ namespace ChatSheet.ToolTests
                 };
                 try
                 {
-                    var args = new object[] { call, new Settings { Approval = ApprovalPolicy.PerWrite }, push, approve };
+                    var args = new object[] { call, new Settings { Approval = ApprovalPolicy.PerWrite }, push, approve, null };
                     ((Task)method.Invoke(agent, args)).GetAwaiter().GetResult();
                 }
                 catch (ProviderException ex) when (ex.Code == "WORKBOOK_CHANGED") { }
@@ -81,7 +81,7 @@ namespace ChatSheet.ToolTests
                         return Task.FromResult(new ApprovalDecision { Approved = true });
                     };
                     var cancelled = false;
-                    try { ((Task)method.Invoke(agent, new object[] { call, new Settings(), push, approve })).GetAwaiter().GetResult(); }
+                    try { ((Task)method.Invoke(agent, new object[] { call, new Settings(), push, approve, null })).GetAwaiter().GetResult(); }
                     catch (OperationCanceledException) { cancelled = true; }
                     report("审批返回时已停止，不再执行迟到写入", cancelled && Read(executor, "C1") == "99", null);
                 }
@@ -96,13 +96,13 @@ namespace ChatSheet.ToolTests
                 };
                 var objectCall = new ToolCall { Id = "audit-object-auto", Name = "excel_object",
                     ArgumentsJson = "{root:'worksheet',path:[{member:'Range',args:['D1']}],action:'set',member:'Value2',args:[77]}" };
-                ((Task)method.Invoke(automatic, new object[] { objectCall, defaults, push, approve })).GetAwaiter().GetResult();
+                ((Task)method.Invoke(automatic, new object[] { objectCall, defaults, push, approve, null })).GetAwaiter().GetResult();
                 report("默认自动执行通用对象工具且不请求审批", approvalCount == 0 && Read(executor, "D1") == "77", null);
                 objectCall.ArgumentsJson = "{root:'worksheet',path:[],action:'call',member:'NonexistentMethod'}";
                 var stoppedLoop = false;
                 for (var i = 0; i < 8; i++)
                 {
-                    try { ((Task)method.Invoke(automatic, new object[] { objectCall, defaults, push, approve })).GetAwaiter().GetResult(); }
+                    try { ((Task)method.Invoke(automatic, new object[] { objectCall, defaults, push, approve, null })).GetAwaiter().GetResult(); }
                     catch (ProviderException ex) when (ex.Code == "NO_PROGRESS") { stoppedLoop = i == 7; }
                 }
                 report("持续执行仍终止八次相同失败", stoppedLoop, null);

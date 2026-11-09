@@ -24,3 +24,25 @@ _ReSharper*/
 # Keep the reproducible validation fixture, but not ad-hoc local workbooks.
 work/*
 !work/p0-test.xlsx
+
+# 仓库根运行期残留。
+# 这些都不是产品文件，而是子进程把字面量或相对路径当成「当前目录下的名字」建出来的，
+# 不忽略就会一直挂在 git status 里，也迟早被 git add -A 误提交。
+#
+# %SystemDrive%：PowerShell 里把 "%SystemDrive%\ProgramData\..." 当字面量传递、
+# 又没让 cmd 展开时，整串会被当成相对路径，于是仓根长出名为 %SystemDrive% 的目录，
+# 里面还躺着宿主拷进去的 ProgramData\Microsoft\Windows\Caches\*.db 缓存库。
+# gitignore 里 % 没有特殊含义，直接写目录名即可。
+/%SystemDrive%/
+#
+# ChatSheet/：WorkBuddyRuntime 的组件暂存目录按相对路径解析，
+# 运行期锁文件 install.lock 被建到仓根，而不是 %LOCALAPPDATA% 下。
+# 根目录只有 ChatSheet.sln，没有同名的受控目录，所以整棵忽略不会挡住任何源码。
+/ChatSheet/
+#
+# NUL：>NUL 重定向在把 NUL 当相对文件名解析时会真的在当前目录落一个实体文件，
+# 内容是重定向进去的那几行文本（实测是 ssh host key），属于纯粹副产物。
+/NUL
+#
+# .claude/：本地 agent 定义属于个人调试工具，不进公开仓库。
+/.claude/

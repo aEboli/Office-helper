@@ -24,6 +24,15 @@ namespace ChatSheet.ToolTests
             // ACP 标准输入必须明确使用无 BOM 的 UTF-8；Windows 默认输入编码会把
             // BOM 写进重定向管道，真实 CLI 通常会容忍，但协议 fixture 应严格校验。
             Console.InputEncoding = new UTF8Encoding(false);
+            if (Array.IndexOf(args, "--agent-tool-tests") >= 0)
+            {
+                StreamTests.Run(ReportProvider);
+                CapabilityTests.Run(ReportProvider);
+                AgentToolTests.Run(ReportProvider);
+                RequestShapeTests.Run(ReportProvider);
+                Console.WriteLine($"=== Agent 工具回归：通过 {_passed}，失败 {_failed} ===");
+                return _failed == 0 ? 0 : 1;
+            }
             if (Array.IndexOf(args, "--reliability-tests") >= 0)
             {
                 ReliabilityTests.Run(ReportProvider);
@@ -102,6 +111,7 @@ namespace ChatSheet.ToolTests
                 }
             if (Array.IndexOf(args, "--project-audit-tests") >= 0)
                 {
+                    AgentToolTests.RunInHost(excel, ReportProvider);
                     ProjectAuditTests.Run(excel, ReportProvider);
                     Console.WriteLine($"=== 项目审查：通过 {_passed}，失败 {_failed} ===");
                 return _failed == 0 ? 0 : 1;
@@ -141,8 +151,14 @@ namespace ChatSheet.ToolTests
                 SystemPromptTests.Run(ReportProvider);
 
                 Console.WriteLine();
+                Console.WriteLine("=== 请求结构配平 ===");
+                RequestShapeTests.Run(ReportProvider);
+
+                Console.WriteLine();
                 Console.WriteLine("=== 流式解析 ===");
                 StreamTests.Run(ReportProvider);
+
+                AgentToolTests.Run(ReportProvider);
 
                 Console.WriteLine();
                 Console.WriteLine("=== 截断与续跑 ===");

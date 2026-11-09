@@ -325,6 +325,18 @@ namespace ChatSheet.AddIn.Agent
 
             // 每轮刷新系统提示：工作簿可能已被用户手动改动。
             await RefreshSystemPromptAsync(settings).ConfigureAwait(false);
+
+            // 开轮先修一次历史：配不上的工具调用/结果会被服务端整轮拒绝
+            // （OpenAI 400 / 网关 502 "No tool output found for function call …"），
+            // 而历史只会重发不会自愈，一次故障能把之后每一轮都拖死。
+            var historyRepair = MessageRepair.Repair(_conversation.Messages);
+            if (historyRepair.Changed)
+            {
+                _conversation.ReplaceAll(historyRepair.Messages);
+                Log.Warn($"历史修复：摘掉 {historyRepair.DroppedCalls} 个没有结果的工具调用、" +
+                    $"{historyRepair.DroppedResults} 条没有调用的工具结果");
+            }
+
             _conversation.Add(ChatMessage.FromUser(userInput ?? string.Empty, images));
 
             if (images != null && images.Count > 0)
@@ -459,12 +471,7 @@ namespace ChatSheet.AddIn.Agent
                     //
                     // 文本协议下用未经闸门过滤的原文：指令块要留在历史里，
                     // 模型才看得见自己发过什么调用。用户那侧看到的是操作卡片。
-                    var assistantMessage = ChatMessage.FromAssistant(
-                        stall != StepStall.None && assistantText.Length == 0
-                            ? "（本次输出被长度上限截断，未能给出内容。）"
-                            : outcome.RawText);
-                    assistantMessage.ToolCalls.AddRange(pendingCalls);
-                    _conversation.Add(assistantMessage);
+                    _conversation.Add(BuildAssistantMessage(stall, assistantText, outcome.RawText, pendingCalls));
 
                     if (stall != StepStall.None)
                     {
@@ -539,6 +546,35 @@ namespace ChatSheet.AddIn.Agent
                     Text = $"已达到单轮步数上限（{settings.MaxSteps} 步）。任务可能尚未完成，可继续输入以让我接着处理，或到设置页提高上限。",
                 }).ConfigureAwait(false);
             }
+        }
+
+        /// <summary>
+        /// 把本步产出的助手消息记进历史。
+        ///
+        /// 只有原生形态才把调用挂上去。文本形态的调用已经写在正文的指令块里，
+        /// 结果又只能以 user 消息回灌（协议里没有 tool 角色），再挂一份
+        /// tool_calls 就变成「有调用、没结果」：OpenAI 系回 400
+        /// （assistant message with 'tool_calls' must be followed by tool messages），
+        /// 网关回 502（No tool output found for function call fc_txt1-739998）。
+        /// 更糟的是这条坏消息会随历史一直重发，之后每一轮、换任何模型都整轮失败。
+        /// </summary>
+        private ChatMessage BuildAssistantMessage(
+            StepStall stall,
+            string assistantText,
+            string rawText,
+            IReadOnlyList<ToolCall> calls)
+        {
+            var message = ChatMessage.FromAssistant(
+                stall != StepStall.None && assistantText.Length == 0
+                    ? "（本次输出被长度上限截断，未能给出内容。）"
+                    : rawText);
+
+            if (_toolMode != ToolProtocolMode.Text && calls != null)
+            {
+                message.ToolCalls.AddRange(calls);
+            }
+
+            return message;
         }
 
         /// <summary>
@@ -1067,6 +1103,27 @@ namespace ChatSheet.AddIn.Agent
             }
         }
 
+        /// <summary>excel_object 缺 root 时要跳过校验的那一项。root 由宿主交互补上。</summary>
+        private static readonly IReadOnlyCollection<string> ExcelObjectRootKey = new[] { "root" };
+
+        /// <summary>
+        /// 参数是否等同于「没提供」：缺键、null、或全空白字符串。
+        ///
+        /// 与 ValidateArguments 的必填判定同一口径。三者必须一致，否则会出现
+        /// 「校验说缺、执行却当有」或反过来的错位，而两边的错误信息互相矛盾时，
+        /// 模型只会把同一个参数反复改写。
+        /// </summary>
+        private static bool IsMissingArgument(JObject args, string name)
+        {
+            var token = args?[name];
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                return true;
+            }
+
+            return token.Type == JTokenType.String && string.IsNullOrWhiteSpace(token.Value<string>());
+        }
+
         private async Task ExecuteOneCoreAsync(
             ToolCall call,
             Settings settings,
@@ -1142,9 +1199,21 @@ namespace ChatSheet.AddIn.Agent
                 },
             }).ConfigureAwait(false);
 
+            // 缺 root 时要先弹「选哪一层」。但那是一次真实的用户交互：
+            // 若等用户点完才校验，模型少写了 path 的调用会让用户白点一次，
+            // 点完收到的仍是 ARG_MISSING——一次点击换不来任何结果。
+            // 因此非交互的参数校验提前到这里，root 暂时跳过（它由下面补上），
+            // 其余必填项与类型错当场回给模型，不惊动用户。
             if (string.Equals(call.Name, "excel_object", StringComparison.Ordinal)
-                && string.IsNullOrWhiteSpace(args.Value<string>("root")))
+                && IsMissingArgument(args, "root"))
             {
+                var preCheck = definition.ValidateArguments(args, ExcelObjectRootKey);
+                if (preCheck != null)
+                {
+                    await FeedToolResultAsync(call, preCheck, onUpdate).ConfigureAwait(false);
+                    return;
+                }
+
                 if (requestObjectRoot == null)
                 {
                     await FeedToolResultAsync(
@@ -1179,6 +1248,17 @@ namespace ChatSheet.AddIn.Agent
                     Kind = "tool-args-updated",
                     Payload = new { id = call.Id, args },
                 }).ConfigureAwait(false);
+            }
+
+            // root 补上之后再完整校验一次：交互选择同样可能给出不合法的值，
+            // 而这一次校验是审批前的最后一道，必须面对完整的 args。
+            // root 由交互补齐时多验这一遍不会误伤：那一路的路径已经在上面的前置校验
+            // 里验过，这里只多一次常数开销，换来的是「审批前 args 一定完整」。
+            var argumentError = definition.ValidateArguments(args);
+            if (argumentError != null)
+            {
+                await FeedToolResultAsync(call, argumentError, onUpdate).ConfigureAwait(false);
+                return;
             }
 
             if (definition.RequiresApproval && !IsAutomaticApproval())
@@ -1749,7 +1829,16 @@ namespace ChatSheet.AddIn.Agent
 
         private async Task FeedToolResultAsync(ToolCall call, ToolResult result, Func<AgentUpdate, Task> onUpdate)
         {
-            var json = JsonConvert.SerializeObject(result.ToPayload(), Formatting.None);
+            var payload = result.ToPayload();
+            var definition = ToolCatalog.Find(call.Name);
+            if (!result.Ok && definition != null && (result.ErrorCode == "ARG_MISSING"
+                || result.ErrorCode == "ARG_INVALID" || result.ErrorCode == "ARGS_INVALID"))
+            {
+                var repair = JObject.FromObject(payload);
+                repair["parameters"] = JObject.FromObject(definition.Parameters);
+                payload = repair;
+            }
+            var json = JsonConvert.SerializeObject(payload, Formatting.None);
             var failedCall = result.Ok ? null : call.Name + "\n" + call.ArgumentsJson + "\n" + json;
             _sameFailureCount = failedCall != null && failedCall == _lastFailedCall ? _sameFailureCount + 1 : 1;
             _lastFailedCall = failedCall;

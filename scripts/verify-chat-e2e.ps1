@@ -34,7 +34,10 @@ param(
     # notool 带 tools 就以 400 拒绝；toolrefusal 接受 tools 但声称没有调用能力；
     # deepseek-flash 验证自动模式首轮直接用文本指令协议；三者都验证照样能动手；
     # novision 带图片就以 400 拒绝，验证视觉回退（去图或经中转转写）。
-    [ValidateSet('tool', 'bulk', 'image', 'flaky', 'reject', 'cut', 'cutloop', 'notool', 'toolrefusal', 'deepseek-flash', 'novision', 'grant')]
+    # native-to-text 第一轮走原生工具调用，第二轮拒绝 tools 迫使降级；
+    # 降级后的请求若还带着原生工具痕迹而顶层没有 tools 声明，同样以 400 拒绝，
+    # 验证历史里的工具痕迹确实被降级成纯文本。
+    [ValidateSet('tool', 'bulk', 'image', 'flaky', 'reject', 'cut', 'cutloop', 'notool', 'toolrefusal', 'deepseek-flash', 'novision', 'native-to-text', 'grant')]
     [string]$Scenario = 'tool',
 
     # image 与 novision 场景下附加一张测试图片。
@@ -435,6 +438,55 @@ public static class XlApp
 
         if ($log -match '已达到单轮步数上限') { Write-Bad '空转到了步数上限，续跑上限没生效' }
         else { Write-Ok '未触及步数上限' }
+
+        return
+    }
+
+    # 协议切换判定：原生跑过一步后被迫切到文本指令协议。
+    #
+    # 验的不是「能不能降级」——那三条已有覆盖——而是降级之后请求体里
+    # 还有没有原生工具痕迹。历史只增不删，痕迹不清就会被每一轮重发，
+    # 而严格网关见到「有工具消息却没声明 tools」直接整轮 400/502。
+    if ($Scenario -eq 'native-to-text') {
+        Write-Step '原生转文本协议判定'
+        $log = if (Test-Path -LiteralPath $logFile) { Get-Content -LiteralPath $logFile -Encoding UTF8 -Raw } else { '' }
+        $mockText = if (Test-Path -LiteralPath $mockLog) { Get-Content -LiteralPath $mockLog -Raw } else { '' }
+
+        if ($mockText -match 'native-to-text: round 1, issuing native tool call') {
+            Write-Ok '第一轮走的是原生工具调用（历史里因此留下工具痕迹）'
+        }
+        else { Write-Bad '第二轮没有先走原生调用，这条链路没有被验到' }
+
+        if ($mockText -match 'native-to-text: retry still declares tools') {
+            Write-Ok 'mock 已拒绝仍在声明 tools 的重发'
+        }
+        else { Write-Bad 'mock 未拒绝带 tools 的重发，降级路径没被触发' }
+
+        # 关键判据：降级后的请求里不能再有 role:"tool" 与工具痕迹。
+        # mock 若收到就回 400 并留下这条日志，这里据此判定。
+        if ($mockText -match 'native-to-text: (\d+) native tool trace') {
+            Write-Bad "降级后的请求仍带 $($Matches[1]) 条原生工具痕迹，会撞 400"
+        }
+        else { Write-Ok '降级后的请求不带任何原生工具痕迹' }
+
+        if ($mockText -match 'native-to-text: round 2, text protocol') {
+            Write-Ok '第二轮已改用文本指令协议收尾'
+        }
+        else { Write-Bad '未见文本协议的收尾轮' }
+
+        if ($log -match '工具形态降级为 Text') { Write-Ok '加载项已记录降级' }
+        else { Write-Bad '未见降级记录' }
+
+        if ($log -match '对话结束') { Write-Ok '本轮正常收尾' } else { Write-Bad '本轮未正常收尾' }
+
+        try {
+            $sheet = $app.ActiveWorkbook.Worksheets.Item(1)
+            $a1 = $sheet.Range('A1').Value2
+            $b1 = $sheet.Range('B1').Value2
+            if ("$a1" -eq '名称' -and "$b1" -eq '数量') { Write-Ok "单元格已写入：A1=$a1 B1=$b1" }
+            else { Write-Bad "单元格内容不符：A1=$a1 B1=$b1" }
+        }
+        catch { Write-Bad "读取单元格失败：$($_.Exception.Message)" }
 
         return
     }

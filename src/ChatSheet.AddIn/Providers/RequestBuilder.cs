@@ -13,25 +13,176 @@ namespace ChatSheet.AddIn.Providers
     {
         internal static JObject Build(ChatRequest request, bool stream)
         {
+            // 出口处统一配平工具调用与结果：配不上的半边会被服务端整轮拒绝，
+            // 而它一旦留在历史里就会被每一轮重发。详见 MessageRepair。
+            var repaired = MessageRepair.Repair(request.Messages);
+            if (repaired.Changed)
+            {
+                Log.Warn($"请求结构修复：摘掉 {repaired.DroppedCalls} 个没有结果的工具调用、" +
+                    $"{repaired.DroppedResults} 条没有调用的工具结果");
+            }
+
+            IReadOnlyList<ChatMessage> messages = repaired.Messages;
+
+            // 原生形态聊过几步后切到文本协议（能力回退或用户手动切），历史里仍留着
+            // assistant.tool_calls 与 role:tool 的消息，而这次请求体已经不声明 tools。
+            // 严格网关对「有工具消息却没声明 tools」直接回 400/502，整轮失败。
+            // 降级只改要发出去的那份副本，历史原对象不动：面板的操作卡片与撤销按钮
+            // 还按原对象登记着，就地改会让记录与界面各说一套。
+            if (!request.IncludeTools)
+            {
+                messages = DowngradeToolHistory(messages, out var toolCalls, out var toolResults);
+                if (toolCalls > 0 || toolResults > 0)
+                {
+                    Log.Warn($"未声明工具，历史降级：{toolCalls} 条助手调用与 {toolResults} 条工具结果已改为文本");
+                }
+            }
+
             switch (request.Protocol)
             {
                 case ProtocolKind.AnthropicMessages:
-                    return BuildAnthropic(request, stream);
+                    return BuildAnthropic(request, messages, stream);
                 case ProtocolKind.GoogleGemini:
-                    return BuildGemini(request);
+                    return BuildGemini(request, messages);
                 case ProtocolKind.OpenAiResponses:
-                    return BuildOpenAiResponses(request, stream);
+                    return BuildOpenAiResponses(request, messages, stream);
                 default:
-                    return BuildOpenAiChat(request, stream);
+                    return BuildOpenAiChat(request, messages, stream);
             }
+        }
+
+        /// <summary>
+        /// 把历史里的原生工具痕迹降级成纯文本：助手消息的调用并进正文，
+        /// 工具结果改写成一条普通 user 消息。
+        ///
+        /// 为什么需要这一层：IncludeTools 为假表示这次请求体里没有 tools 声明。
+        /// 而原生形态聊过的历史里留着 assistant.tool_calls 与 role:"tool" 消息，
+        /// 严格网关见到「有工具消息却没声明 tools」会整轮拒绝（400），
+        /// 或被当成调用找不到结果的 502。能力回退、用户手动切协议都会走到这里，
+        /// 而历史只增不删，不降级就等于每轮都带着它重发。
+        ///
+        /// 为什么不直接把工具消息删掉：模型会失去「自己做过什么、拿到了什么」，
+        /// 下一步必然重复同一批读取。降级保留了信息，只是换了承载形式。
+        ///
+        /// 为什么不就地改历史：面板上的操作卡片与撤销按钮都还按原对象登记着，
+        /// 改掉它等于让记录和界面各说一套。这里只产出复制件。
+        ///
+        /// 正文里的措辞刻意避开 tool_calls / function_call / tool_use 这些字面量：
+        /// 降级后的正文会原样进请求体，写上这些词就等于把要躲开的痕迹又带回去了。
+        /// </summary>
+        private static IReadOnlyList<ChatMessage> DowngradeToolHistory(
+            IReadOnlyList<ChatMessage> source,
+            out int downgradedCalls,
+            out int downgradedResults)
+        {
+            downgradedCalls = 0;
+            downgradedResults = 0;
+
+            var needed = false;
+            foreach (var message in source)
+            {
+                if (message == null) { continue; }
+                if (message.Role == ChatRole.Tool
+                    || (message.Role == ChatRole.Assistant && message.ToolCalls.Count > 0))
+                {
+                    needed = true;
+                    break;
+                }
+            }
+
+            // 没有痕迹就原样交出：多复制一遍会让上下文压缩看到的对象与历史不一致。
+            if (!needed)
+            {
+                return source;
+            }
+
+            var downgraded = new List<ChatMessage>(source.Count);
+            foreach (var message in source)
+            {
+                if (message == null)
+                {
+                    continue;
+                }
+
+                if (message.Role == ChatRole.Tool)
+                {
+                    downgradedResults++;
+                    downgraded.Add(new ChatMessage
+                    {
+                        Role = ChatRole.User,
+                        Content = DescribeToolResult(message),
+                        // 仍标出工具结果身份：上下文压缩靠它优先压这一类，
+                        // 丢了这个标记，压缩会转去丢真正的对话历史。
+                        IsTextProtocolToolResult = true,
+                    });
+                    continue;
+                }
+
+                if (message.Role == ChatRole.Assistant && message.ToolCalls.Count > 0)
+                {
+                    downgradedCalls += message.ToolCalls.Count;
+                    var copy = new ChatMessage
+                    {
+                        Role = ChatRole.Assistant,
+                        Content = DescribeAssistantCalls(message),
+                    };
+                    copy.Images.AddRange(message.Images);
+                    downgraded.Add(copy);
+                    continue;
+                }
+
+                downgraded.Add(message);
+            }
+
+            return downgraded;
+        }
+
+        /// <summary>把一条助手消息连同它的调用写成正文。调用参数保留，模型才知道当时传了什么。</summary>
+        private static string DescribeAssistantCalls(ChatMessage message)
+        {
+            var builder = new System.Text.StringBuilder();
+            if (!string.IsNullOrWhiteSpace(message.Content))
+            {
+                builder.Append(message.Content.TrimEnd());
+                builder.Append('\n');
+            }
+
+            builder.Append("（以下为此前的原生调用记录，已改为文本，供了解上下文。）");
+            foreach (var call in message.ToolCalls)
+            {
+                builder.Append("\n工具：").Append(call.Name ?? "(未命名)");
+                builder.Append("\n参数：").Append(Trim(call.ArgumentsJson, 600) ?? "{}");
+            }
+
+            return builder.ToString();
+        }
+
+        /// <summary>把一条工具结果写成普通用户文本。</summary>
+        private static string DescribeToolResult(ChatMessage message)
+        {
+            var name = string.IsNullOrWhiteSpace(message.ToolName) ? "工具" : message.ToolName;
+            return $"（工具执行结果 · {name}）\n{message.Content ?? string.Empty}";
+        }
+
+        private static string Trim(string text, int limit)
+        {
+            if (string.IsNullOrEmpty(text) || text.Length <= limit)
+            {
+                return text;
+            }
+
+            return text.Substring(0, limit) + "…（已截断）";
         }
 
         // ---- OpenAI Chat Completions ----
 
-        private static JObject BuildOpenAiChat(ChatRequest request, bool stream)
+        private static JObject BuildOpenAiChat(
+            ChatRequest request,
+            IReadOnlyList<ChatMessage> source,
+            bool stream)
         {
             var messages = new JArray();
-            foreach (var message in request.Messages)
+            foreach (var message in source)
             {
                 switch (message.Role)
                 {
@@ -177,10 +328,13 @@ namespace ChatSheet.AddIn.Providers
 
         // ---- OpenAI Responses ----
 
-        private static JObject BuildOpenAiResponses(ChatRequest request, bool stream)
+        private static JObject BuildOpenAiResponses(
+            ChatRequest request,
+            IReadOnlyList<ChatMessage> source,
+            bool stream)
         {
             var input = new JArray();
-            foreach (var message in request.Messages)
+            foreach (var message in source)
             {
                 if (message.Role == ChatRole.Tool)
                 {
@@ -288,12 +442,15 @@ namespace ChatSheet.AddIn.Providers
 
         // ---- Anthropic Messages ----
 
-        private static JObject BuildAnthropic(ChatRequest request, bool stream)
+        private static JObject BuildAnthropic(
+            ChatRequest request,
+            IReadOnlyList<ChatMessage> source,
+            bool stream)
         {
             var messages = new JArray();
             string systemPrompt = null;
 
-            foreach (var message in request.Messages)
+            foreach (var message in source)
             {
                 if (message.Role == ChatRole.System)
                 {
@@ -494,12 +651,12 @@ namespace ChatSheet.AddIn.Providers
 
         // ---- Google Gemini ----
 
-        private static JObject BuildGemini(ChatRequest request)
+        private static JObject BuildGemini(ChatRequest request, IReadOnlyList<ChatMessage> source)
         {
             var contents = new JArray();
             JObject systemInstruction = null;
 
-            foreach (var message in request.Messages)
+            foreach (var message in source)
             {
                 if (message.Role == ChatRole.System)
                 {

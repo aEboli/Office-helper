@@ -12,7 +12,7 @@ Windows COM 加载项 · WebView2 面板 · 流式对话 · 可审阅的 Excel/W
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows&logoColor=white)](#安装)
 [![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4?logo=dotnet&logoColor=white)](#从源码构建)
 
-[下载公开版 v0.10.3.17](https://github.com/aEboli/Office-helper/releases/tag/v0.10.3.17) · [发行说明](docs/releases/v0.10.3.17.md) · [提交问题](https://github.com/aEboli/Office-helper/issues)
+[下载公开版 v0.10.3.20](https://github.com/aEboli/Office-helper/releases/tag/v0.10.3.20) · [发行说明](docs/releases/v0.10.3.20.md) · [提交问题](https://github.com/aEboli/Office-helper/issues)
 
 </div>
 
@@ -21,7 +21,7 @@ Windows COM 加载项 · WebView2 面板 · 流式对话 · 可审阅的 Excel/W
 
 ## 先看这里
 
-Office-helper 在 Excel/WPS 表格中读取当前工作簿和选区，在 Word/WPS Writer 中读取当前文档和明确 Story 目标，再通过对应工具完成分析与修改。当前源码版本 0.10.3.18 默认全自动执行，操作卡片报告实际结果；仍可在设置中主动选择逐项或每轮审批。Excel 与 Word 入口统一显示为 Office-helper，旧 ChatSheet ProgID/CLSID 仅用于兼容已有安装。
+Office-helper 在 Excel/WPS 表格中读取当前工作簿和选区，在 Word/WPS Writer 中读取当前文档和明确 Story 目标，再通过对应工具完成分析与修改。当前源码版本 0.10.3.20 默认全自动执行，操作卡片报告实际结果；仍可在设置中主动选择逐项或每轮审批。Excel 与 Word 入口统一显示为 Office-helper，旧 ChatSheet ProgID/CLSID 仅用于兼容已有安装。
 
 ~~~text
 选区 / 工作簿 → 模型理解上下文 → 表格工具执行 → 操作卡片与结果核验
@@ -69,12 +69,12 @@ Word 段落工具以字符为单位设置首行缩进，并读回检查实际值
 
 ### 预构建 Windows ZIP（推荐）
 
-1. 下载 [`ChatSheet-v0.10.3.17-win.zip`](https://github.com/aEboli/Office-helper/releases/download/v0.10.3.17/ChatSheet-v0.10.3.17-win.zip) 和同名 `.sha256` 文件。
+1. 下载 [`ChatSheet-v0.10.3.20-win.zip`](https://github.com/aEboli/Office-helper/releases/download/v0.10.3.20/ChatSheet-v0.10.3.20-win.zip) 和同名 `.sha256` 文件。
 2. 在 PowerShell 中核对哈希：
 
    ~~~powershell
-   Get-FileHash -Algorithm SHA256 .\ChatSheet-v0.10.3.17-win.zip
-   Get-Content .\ChatSheet-v0.10.3.17-win.zip.sha256
+   Get-FileHash -Algorithm SHA256 .\ChatSheet-v0.10.3.20-win.zip
+   Get-Content .\ChatSheet-v0.10.3.20-win.zip.sha256
    ~~~
 
 3. 完整解压 ZIP，双击根目录 `install.bat`，选择安装或更新。
@@ -120,7 +120,11 @@ dotnet build ChatSheet.sln --configuration Release
 ## 开发与测试
 
 ~~~powershell
+.\scripts\verify-all.ps1
+
+# 等价的单步命令，便于定位失败项
 dotnet build ChatSheet.sln --configuration Release
+.\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe --agent-tool-tests
 .\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe --reliability-tests
 .\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe --project-audit-tests
 Get-ChildItem tests\web\*.test.mjs | ForEach-Object { node $_.FullName }
@@ -130,7 +134,7 @@ Get-ChildItem tests\web\*.test.mjs | ForEach-Object { node $_.FullName }
 
 ## 文档
 
-- [v0.10.3.17 发行说明](docs/releases/v0.10.3.17.md)
+- [v0.10.3.20 发行说明](docs/releases/v0.10.3.20.md)
 - [Windows 发行包安装、校验与卸载](docs/windows-release-install.md)
 - [架构说明与常见宿主陷阱](docs/architecture.md)
 - [全部 GitHub Releases](https://github.com/aEboli/Office-helper/releases)
@@ -149,6 +153,6 @@ Windows 用户可以运行：
 
 安装器会从 GitHub Release 下载 ZIP 和 SHA-256 sidecar，校验一致后再调用本地安装脚本。也可以下载 ZIP 后双击根目录的 install.bat，菜单提供安装、卸载和诊断。
 
-当前版本是 Windows COM 加载项，依赖 Excel for Windows、.NET Framework 4.8 和 WebView2，不能安装到 Excel for Mac。仓库提供 install.command 和 scripts/install-macos.sh 作为一键兼容性检查；它不会修改 macOS 或伪装成已安装。macOS 原生支持需要 Office.js 加载项和跨平台本地服务，尚未包含在 v0.10.3.18。
+当前版本是 Windows COM 加载项，依赖 Excel for Windows、.NET Framework 4.8 和 WebView2，不能安装到 Excel for Mac。仓库提供 install.command 和 scripts/install-macos.sh 作为一键兼容性检查；它不会修改 macOS 或伪装成已安装。macOS 原生支持需要 Office.js 加载项和跨平台本地服务，尚未包含在 v0.10.3.20。
 
 - [macOS 安装边界](docs/macos-install.md)

@@ -54,6 +54,21 @@ namespace ChatSheet.AddIn.Agent
         }
 
         /// <summary>
+        /// 用修复后的消息替换全部历史。
+        ///
+        /// 只用于摘掉配不上的工具调用/结果：留着它们，服务端会整轮拒绝，
+        /// 而历史只增不删，一次故障会把之后每一轮都拖死。
+        /// </summary>
+        internal void ReplaceAll(IEnumerable<ChatMessage> messages)
+        {
+            _messages.Clear();
+            if (messages != null)
+            {
+                _messages.AddRange(messages);
+            }
+        }
+
+        /// <summary>
         /// 估算 token 数。
         ///
         /// 刻意用启发式而非精确分词：真实分词需要引入模型专属分词器，
