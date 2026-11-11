@@ -27,6 +27,11 @@ namespace ChatSheet.AddIn.Tools
             Description = description;
             Risk = risk;
             Parameters = parameters;
+
+            // 反射序列化整个参数定义（excel_object 那份最大）只做一次：
+            // 参数对象是匿名类型，构造完就再也不会变，而 ValidateArguments
+            // 每次工具调用都要进来，放在方法里等于每次调用都重新反射一遍。
+            Schema = JObject.FromObject(parameters);
         }
 
         internal string Name { get; }
@@ -37,6 +42,14 @@ namespace ChatSheet.AddIn.Tools
 
         /// <summary>JSON Schema 形态的参数定义，直接作为函数声明发给模型。</summary>
         internal object Parameters { get; }
+
+        /// <summary>
+        /// 构造函数里一次性固化下来的 JSON Schema（<see cref="Parameters"/> 序列化后的形态）。
+        ///
+        /// 只读，任何调用方都不得修改它：它被参数校验、错误回灌等多处共用，
+        /// 改一处等于改所有工具、所有轮次（包括已经写进对话历史的那份）。
+        /// </summary>
+        internal JObject Schema { get; }
 
         internal bool RequiresApproval => Risk != ToolRisk.Read;
 
@@ -57,7 +70,8 @@ namespace ChatSheet.AddIn.Tools
         internal ToolResult ValidateArguments(JObject args, IReadOnlyCollection<string> skip)
         {
             args = args ?? new JObject();
-            var schema = JObject.FromObject(Parameters);
+            // 用构造期缓存的那份，别在这里再反射一次 Parameters（只读使用）。
+            var schema = Schema;
 
             var requiredKeys = new HashSet<string>(StringComparer.Ordinal);
             if (schema["required"] is JArray required)

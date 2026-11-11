@@ -201,7 +201,7 @@ namespace ChatWord.AddIn.Hosts
             try
             {
                 document = ActiveDocument();
-                if (document == null) { return new { ok = false, errorCode = "DOCUMENT_REQUIRED", error = "当前没有打开的文档。" }; }
+                if (document == null) { throw new WordToolException("DOCUMENT_REQUIRED", "当前没有打开的文档。"); }
                 var stories = new List<object>();
                 var storyErrors = new List<object>();
                 foreach (var pair in KnownStories)

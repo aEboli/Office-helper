@@ -626,52 +626,63 @@ namespace ChatSheet.AddIn.Tools
         {
             var address = RequireString(args, "range");
             var sheet = OptionalString(args, "sheet");
-            var includeFormulas = OptionalBool(args, "include_formulas") ?? false;
 
             using (var range = _resolver.Resolve(address, sheet))
             {
-                RangeResolver.AssertCellLimit(range, ToolLimits.MaxReadCells, "读取");
-
-                var offset = args.Value<long?>("offset") ?? 0;
-                if (offset < 0 || offset >= range.CellCount)
-                {
-                    throw new ToolException("ARG_INVALID", "offset 必须位于范围内。");
-                }
-                var rowOffset = offset / range.Columns;
-                var colOffset = (int)(offset % range.Columns);
-                var columns = Math.Min(range.Columns - colOffset, ToolLimits.ReadPageCells);
-                var rows = colOffset == 0 && columns == range.Columns
-                    ? Math.Min(range.Rows - (int)rowOffset, Math.Max(1, ToolLimits.ReadPageCells / columns)) : 1;
-                var firstRow = Convert.ToInt32(Com.Get(range.Range, "Row")) + (int)rowOffset;
-                var firstCol = Convert.ToInt32(Com.Get(range.Range, "Column")) + colOffset;
-                var pageAddress = ColumnName(firstCol) + firstRow + ":" +
-                    ColumnName(firstCol + columns - 1) + (firstRow + rows - 1);
-                using (var page = _resolver.Resolve(pageAddress, range.SheetName))
-                {
-                    var values = ReadMatrix(page, "Value2");
-                    var payload = new Dictionary<string, object>
-                    {
-                        ["sheet"] = range.SheetName,
-                        ["address"] = range.Address,
-                        ["rows"] = rows,
-                        ["columns"] = columns,
-                        ["page_address"] = page.Address,
-                        ["total_cells"] = range.CellCount,
-                        ["total_rows"] = range.Rows,
-                        ["total_columns"] = range.Columns,
-                        ["next_offset"] = offset + (long)rows * columns < range.CellCount
-                            ? (object)(offset + (long)rows * columns) : null,
-                        ["values"] = values,
-                    };
-
-                    if (includeFormulas)
-                    {
-                        payload["formulas"] = ReadMatrix(page, "Formula");
-                    }
-
-                    return ToolResult.Success(payload);
-                }
+                return ReadRange(range, args);
             }
+        }
+
+        private ToolResult ReadRange(ResolvedRange range, JObject args)
+        {
+            var includeFormulas = OptionalBool(args, "include_formulas") ?? false;
+            RangeResolver.AssertCellLimit(range, ToolLimits.MaxReadCells, "读取");
+
+            var offset = args.Value<long?>("offset") ?? 0;
+            if (offset < 0 || offset >= range.CellCount)
+            {
+                throw new ToolException("ARG_INVALID", "offset 必须位于范围内。");
+            }
+            var rowOffset = offset / range.Columns;
+            var colOffset = (int)(offset % range.Columns);
+            var columns = Math.Min(range.Columns - colOffset, ToolLimits.ReadPageCells);
+            var rows = colOffset == 0 && columns == range.Columns
+                ? Math.Min(range.Rows - (int)rowOffset, Math.Max(1, ToolLimits.ReadPageCells / columns)) : 1;
+            var firstRow = Convert.ToInt32(Com.Get(range.Range, "Row")) + (int)rowOffset;
+            var firstCol = Convert.ToInt32(Com.Get(range.Range, "Column")) + colOffset;
+            var pageAddress = ColumnName(firstCol) + firstRow + ":" +
+                ColumnName(firstCol + columns - 1) + (firstRow + rows - 1);
+            object pageRange = null;
+            try
+            {
+                // 宿主事件可能切换活动工作簿，分页与验证必须沿用最初解析的工作表。
+                pageRange = Com.Get(range.Worksheet, "Range", pageAddress);
+                var page = new ResolvedRange(null, pageRange, range.SheetName,
+                    Com.GetString(pageRange, "Address"), rows, columns);
+                var values = ReadMatrix(page, "Value2");
+                var payload = new Dictionary<string, object>
+                {
+                    ["sheet"] = range.SheetName,
+                    ["address"] = range.Address,
+                    ["rows"] = rows,
+                    ["columns"] = columns,
+                    ["page_address"] = page.Address,
+                    ["total_cells"] = range.CellCount,
+                    ["total_rows"] = range.Rows,
+                    ["total_columns"] = range.Columns,
+                    ["next_offset"] = offset + (long)rows * columns < range.CellCount
+                        ? (object)(offset + (long)rows * columns) : null,
+                    ["values"] = values,
+                };
+
+                if (includeFormulas)
+                {
+                    payload["formulas"] = ReadMatrix(page, "Formula");
+                }
+
+                return ToolResult.Success(payload);
+            }
+            finally { Com.Release(pageRange); }
         }
 
         private static string ColumnName(int column)

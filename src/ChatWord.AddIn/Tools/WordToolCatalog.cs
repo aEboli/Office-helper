@@ -91,6 +91,23 @@ namespace ChatWord.AddIn.Tools
             new ToolDefinition("insert_page_break", "在明确 Story 位置插入分页符。", ToolRisk.Structure, WithTarget(new { }, "target")),
         };
 
+        internal static ToolResult ValidateArguments(string name, JObject args)
+        {
+            var definition = All.FirstOrDefault(tool => tool.Name == name) ?? (name == InsertDraft.Name ? InsertDraft : null);
+            if (definition == null) { return ToolResult.Failure("UNKNOWN_TOOL", "Word 工具不存在：" + name); }
+            var textKey = name == "replace_text" ? "replace" : name == "insert_text" || name == "edit_table" ? "text" : null;
+            if (textKey != null)
+            {
+                var text = args?[textKey];
+                if (text == null || text.Type == JTokenType.Null)
+                { return ToolResult.Failure("ARG_MISSING", "缺少必需参数 " + textKey + "；清空内容时请显式传入空字符串。"); }
+                if (text.Type != JTokenType.String)
+                { return ToolResult.Failure("ARG_INVALID", "参数 " + textKey + " 必须为字符串。"); }
+            }
+            // 空字符串表示清空，空白字符也是文档正文，不能按通用必填文本规则拒绝。
+            return definition.ValidateArguments(args, textKey == null ? null : new[] { textKey });
+        }
+
         internal static string PromptSection(bool textProtocol)
         {
             var builder = new StringBuilder();

@@ -95,13 +95,14 @@ namespace ChatSheet.AddIn.Tools
 
         private static void ValidateObjectArguments(JToken args)
         {
-            if (args == null) { return; }
+            if (args == null || args.Type == JTokenType.Null) { return; }
             if (!(args is JArray array)) { throw new ToolException("ARG_INVALID", "args 必须为数组。"); }
             foreach (var token in array)
             {
                 if (token is JArray nested) { ValidateObjectArguments(nested); }
                 else if (token is JObject obj)
                 {
+                    if (OptionalBool(obj, "missing") == true) { continue; }
                     if (obj["ref"] is JObject reference) { ValidateObjectRequest(reference, true); }
                     else if (obj["matrix"] is JArray matrix)
                     {
@@ -113,8 +114,7 @@ namespace ChatSheet.AddIn.Tools
                             foreach (var cell in row) { ObjectScalar(cell); }
                         }
                     }
-                    else if (obj.Value<bool?>("missing") != true)
-                        throw new ToolException("ARG_INVALID", "对象参数应为 ref、matrix 或 missing。");
+                    else { throw new ToolException("ARG_INVALID", "对象参数应为 ref、matrix 或 missing。"); }
                 }
                 else { ObjectScalar(token); }
             }
@@ -134,7 +134,7 @@ namespace ChatSheet.AddIn.Tools
             foreach (JObject step in (JArray)request["path"])
             {
                 var parameters = ObjectArguments(step["args"] as JArray, held);
-                current = step.Value<string>("kind") == "call"
+                current = OptionalString(step, "kind") == "call"
                     ? Com.Call(current, RequireString(step, "member"), parameters)
                     : Com.Get(current, RequireString(step, "member"), parameters);
                 if (current == null) { throw new ToolException("OBJECT_NOT_FOUND", "对象路径没有返回对象。"); }
@@ -152,7 +152,7 @@ namespace ChatSheet.AddIn.Tools
                 var token = args[i];
                 if (token is JObject obj)
                 {
-                    if (obj.Value<bool?>("missing") == true) { values[i] = Type.Missing; }
+                    if (OptionalBool(obj, "missing") == true) { values[i] = Type.Missing; }
                     else if (obj["ref"] is JObject reference) { values[i] = new DispatchWrapper(ResolveObject(reference, held)); }
                     else if (obj["matrix"] is JArray matrix)
                     {
@@ -177,7 +177,18 @@ namespace ChatSheet.AddIn.Tools
         {
             if (token == null || token.Type == JTokenType.Null) { return null; }
             if (token is JContainer) { throw new ToolException("ARG_INVALID", "单元格参数必须是标量。"); }
-            if (token.Type == JTokenType.Integer) { return token.Value<int>(); }
+            if (token.Type == JTokenType.Integer)
+            {
+                try
+                {
+                    var value = token.Value<long>();
+                    return value >= int.MinValue && value <= int.MaxValue ? (object)(int)value : value;
+                }
+                catch (OverflowException)
+                {
+                    throw new ToolException("ARG_INVALID", "整数参数超出 Int64 范围：" + token + "。");
+                }
+            }
             if (token.Type == JTokenType.Float) { return token.Value<double>(); }
             if (token.Type == JTokenType.Boolean) { return token.Value<bool>(); }
             return token.Value<string>();

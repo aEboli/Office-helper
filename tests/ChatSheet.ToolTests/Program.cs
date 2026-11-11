@@ -30,6 +30,11 @@ namespace ChatSheet.ToolTests
                 CapabilityTests.Run(ReportProvider);
                 AgentToolTests.Run(ReportProvider);
                 RequestShapeTests.Run(ReportProvider);
+                WordRequestShapeTests.Run(ReportProvider);
+                WordAgentRegressionTests.Run(ReportProvider);
+                ExcelToolRegressionTests.Run(ReportProvider);
+                WordToolRegressionTests.Run(ReportProvider);
+                ProviderToolRegressionTests.Run(ReportProvider);
                 Console.WriteLine($"=== Agent 工具回归：通过 {_passed}，失败 {_failed} ===");
                 return _failed == 0 ? 0 : 1;
             }
@@ -77,6 +82,9 @@ namespace ChatSheet.ToolTests
             if (Array.IndexOf(args, "--word-tests") >= 0)
             {
                 WordTests.Run(ReportProvider);
+                WordRequestShapeTests.Run(ReportProvider);
+                WordAgentRegressionTests.Run(ReportProvider);
+                WordToolRegressionTests.Run(ReportProvider);
                 Console.WriteLine($"=== Word 工具测试：通过 {_passed}，失败 {_failed} ===");
                 return _failed == 0 ? 0 : 1;
             }
@@ -153,6 +161,11 @@ namespace ChatSheet.ToolTests
                 Console.WriteLine();
                 Console.WriteLine("=== 请求结构配平 ===");
                 RequestShapeTests.Run(ReportProvider);
+                WordRequestShapeTests.Run(ReportProvider);
+                WordAgentRegressionTests.Run(ReportProvider);
+                ExcelToolRegressionTests.Run(ReportProvider);
+                WordToolRegressionTests.Run(ReportProvider);
+                ProviderToolRegressionTests.Run(ReportProvider);
 
                 Console.WriteLine();
                 Console.WriteLine("=== 流式解析 ===");

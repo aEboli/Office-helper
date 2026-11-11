@@ -38,7 +38,8 @@ namespace ChatSheet.AddIn.Providers
             var buffer = new byte[8192];
             var pending = new StringBuilder();
             var decoder = new UTF8Encoding(false).GetDecoder();
-            var chars = new char[8192];
+            // 解码器可能带着上一批未完成的四字节字符，本批会额外产出一个代理项。
+            var chars = new char[Encoding.UTF8.GetMaxCharCount(buffer.Length)];
 
             var eventName = (string)null;
             var dataLines = new List<string>();

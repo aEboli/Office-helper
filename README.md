@@ -29,6 +29,17 @@ Office-helper 在 Excel/WPS 表格中读取当前工作簿和选区，在 Word/W
 
 适合解释公式、清理数据、批量改格式、合并标题、创建表格或图表，也适合把自然语言要求变成能复核、能撤销的表格操作。
 
+## 工具调用修复（2026-11-11）
+
+本轮修复更新 `main` 源码，现有 v0.10.3.20 Windows ZIP 未重新打包；需要这些修复时请从源码构建。
+
+- **Excel**：写入前完整校验矩阵、格式和对象调用参数；分页读取、分块写入与结果核验沿用首次解析的工作表，避免宿主切换活动工作簿后操作错位。
+- **Word/WPS Writer**：非法或缺失参数返回可纠正的错误；修复嵌套表格定位、单元格替换残留末字和读回失败被误报为成功，分页符仅允许插入折叠位置。
+- **停止与审批**：Word 审批等待随停止结束，执行前再次检查取消状态，面板关闭后不再执行排队回调。
+- **模型协议**：修复流式 UTF-8 解码、重复终态、并行工具参数与结果配对；行内示例和长围栏中的示例不会被误识别为文本工具指令。
+
+本地验证通过 Release 构建（0 警告、0 错误）、947 项 .NET 测试、37 个 Web 测试文件和 22 项 OpenSpec 严格校验，并完成 Excel、WPS 表格、Word 与 WPS Writer 的真实宿主专项。协议层使用本地 fixture 验证，未调用真实付费模型。复现证据、专项结果与复跑方式见 [工具调用排查与验证记录](docs/verification-tool-call-audit.md)。
+
 ## 能做什么
 
 | 场景 | 能力 | 默认保护 |
@@ -122,19 +133,28 @@ dotnet build ChatSheet.sln --configuration Release
 ~~~powershell
 .\scripts\verify-all.ps1
 
-# 等价的单步命令，便于定位失败项
+# 常用单步与专项命令，便于定位失败项
 dotnet build ChatSheet.sln --configuration Release
+.\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe
 .\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe --agent-tool-tests
+.\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe --word-tests
 .\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe --reliability-tests
 .\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe --project-audit-tests
-Get-ChildItem tests\web\*.test.mjs | ForEach-Object { node $_.FullName }
+.\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe --wps --project-audit-tests
+.\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe --word-smoke
+.\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe --wps-word-smoke
+Get-ChildItem tests\web\*.test.mjs | ForEach-Object { node $_.FullName; if ($LASTEXITCODE -ne 0) { throw $_.Name } }
+openspec validate --all --strict
 ~~~
+
+`verify-all.ps1` 覆盖构建、Agent、可靠性、Excel 项目审查、Codex 配置和 Web 测试；默认完整 .NET 测试、Word/WPS 宿主专项及 OpenSpec 校验需按上面的命令单独运行。完整 .NET 测试需要 Excel；其他真实宿主专项需要安装对应 Office/WPS 程序。
 
 涉及 COM 注册、Excel/WPS 宿主调用或 WebView2 初始化时，请先阅读 [架构说明](docs/architecture.md)。规范变更按仓库内 OpenSpec 流程维护。
 
 ## 文档
 
 - [v0.10.3.20 发行说明](docs/releases/v0.10.3.20.md)
+- [工具调用排查与验证记录（2026-11-11）](docs/verification-tool-call-audit.md)
 - [Windows 发行包安装、校验与卸载](docs/windows-release-install.md)
 - [架构说明与常见宿主陷阱](docs/architecture.md)
 - [全部 GitHub Releases](https://github.com/aEboli/Office-helper/releases)

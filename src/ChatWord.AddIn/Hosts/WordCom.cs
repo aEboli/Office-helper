@@ -53,6 +53,15 @@ namespace ChatWord.AddIn.Hosts
                 : fallback;
         }
 
+        internal static string ReadText(object range)
+        {
+            var text = Get(range, "Text");
+            if (text is string value) { return value; }
+            if (text == null && Convert.ToInt32(Get(range, "Start")) == Convert.ToInt32(Get(range, "End")))
+            { return string.Empty; }
+            throw new WordToolException("READBACK_FAILED", "宿主未返回有效的 Range.Text 文本。");
+        }
+
         internal static int Int(object target, string name, int fallback = 0)
         {
             try { return TryGet(target, name, out var value) && value != null ? Convert.ToInt32(value) : fallback; }

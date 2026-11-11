@@ -36,6 +36,7 @@ namespace ChatSheet.ToolTests
     {
         internal static void Run(Action<string, bool, string> report)
         {
+            TestUnrelatedRequestDoesNotAffectCounts(report);
             TestConcurrencyIsHonoured(report);
             TestSerialWhenAskedFor(report);
             TestOneFailureDoesNotStopBatch(report);
@@ -47,6 +48,22 @@ namespace ChatSheet.ToolTests
             TestTargetCountsOnlyAvailable(report);
             TestUnreachableTargetRunsEverything(report);
             TestTargetClampedAndGateReleased(report);
+        }
+
+        private static void TestUnrelatedRequestDoesNotAffectCounts(Action<string, bool, string> report)
+        {
+            using (var server = new ConcurrentServer(null, delayMs: 0))
+            using (var probe = new TcpClient("127.0.0.1", server.Port))
+            using (var stream = probe.GetStream())
+            {
+                stream.ReadTimeout = 3000;
+                var bytes = Encoding.ASCII.GetBytes("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+                stream.Write(bytes, 0, bytes.Length);
+                var response = new byte[1024];
+                while (stream.Read(response, 0, response.Length) > 0) { }
+                report("本机端口探测不计入模型并发或请求数", server.Served == 0 && server.Peak == 0,
+                    "请求 " + server.Served + "，峰值 " + server.Peak);
+            }
         }
 
         /// <summary>
@@ -702,7 +719,7 @@ namespace ChatSheet.ToolTests
             /// 这就是钱：判「真的少发了请求」只能看它，不能拿 Spans.Count 代替——
             /// span 是在 Thread.Sleep 之后才写进去的，达标停那一刻还在飞的几条
             /// 可能一条都没写，于是读到的数偏小，而偏小的方向恰好让断言更容易假绿。
-            /// 这个计数在连接刚开始被服务时就加，早于任何延时与应答。
+            /// 这个计数在模型请求被确认后就加，早于任何延时与应答。
             /// </summary>
             internal int Served { get { lock (_gate) { return _served; } } }
 
@@ -739,18 +756,21 @@ namespace ChatSheet.ToolTests
 
             private void Serve(TcpClient connection)
             {
-                lock (_gate)
-                {
-                    _inFlight++;
-                    _served++;
-                    if (_inFlight > _peak) { _peak = _inFlight; }
-                }
-
+                var counted = false;
                 try
                 {
                     using (var stream = connection.GetStream())
                     {
-                        var model = ExtractModel(ReadRequest(stream));
+                        var body = ReadRequest(stream);
+                        if (body == null) { Write(stream, 404, "{}", false); return; }
+                        var model = ExtractModel(body);
+                        lock (_gate)
+                        {
+                            _inFlight++;
+                            _served++;
+                            counted = true;
+                            if (_inFlight > _peak) { _peak = _inFlight; }
+                        }
                         var began = _clock.ElapsedMilliseconds;
 
                         // 停一会儿，好让并发叠起来。不停的话每个请求瞬间结束，
@@ -806,7 +826,7 @@ namespace ChatSheet.ToolTests
                 }
                 finally
                 {
-                    lock (_gate) { _inFlight--; }
+                    if (counted) { lock (_gate) { _inFlight--; } }
                 }
             }
 
@@ -829,6 +849,7 @@ namespace ChatSheet.ToolTests
                     }
                 }
 
+                if (!head.ToString().StartsWith("POST /v1/chat/completions HTTP/", StringComparison.Ordinal)) { return null; }
                 foreach (var line in head.ToString().Split('\n'))
                 {
                     var trimmed = line.Trim();

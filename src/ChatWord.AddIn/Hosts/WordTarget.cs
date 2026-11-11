@@ -81,8 +81,11 @@ namespace ChatWord.AddIn.Hosts
             object range = null;
             try
             {
-                range = StoryRange(document, storyType);
-                if (range == null) { throw new WordToolException("TARGET_NOT_FOUND", "宿主不提供 Story：" + storyName); }
+                if (!hasBookmark && !hasContentControl)
+                {
+                    range = StoryRange(document, storyType);
+                    if (range == null) { throw new WordToolException("TARGET_NOT_FOUND", "宿主不提供 Story：" + storyName); }
+                }
 
                 var locator = "story";
                 if (hasRange)
@@ -126,8 +129,6 @@ namespace ChatWord.AddIn.Hosts
                         if (table == null) { throw new WordToolException("TARGET_NOT_FOUND", "找不到指定表格。"); }
                         cell = WordCom.Call(table, "Cell", row.Value, column.Value);
                         selected = WordCom.Get(cell, "Range");
-                        // Cell.Range includes the paragraph and end-of-cell markers.
-                        WordCom.Call(selected, "SetRange", WordCom.Int(selected, "Start"), WordCom.Int(selected, "End") - 2);
                         WordCom.Release(range); range = selected; selected = null; locator = "table_cell";
                     }
                     finally { WordCom.Release(selected); WordCom.Release(cell); WordCom.Release(table); WordCom.Release(tables); }
@@ -167,6 +168,10 @@ namespace ChatWord.AddIn.Hosts
                     finally { WordCom.Release(selected); WordCom.Release(control); WordCom.Release(controls); }
                 }
 
+                var actualStoryType = Convert.ToInt32(WordCom.Get(range, "StoryType"));
+                if (actualStoryType < 1 || ((!hasBookmark && !hasContentControl || !string.IsNullOrWhiteSpace(target.Value<string>("story"))) && actualStoryType != storyType))
+                { throw new WordToolException("TARGET_INVALID", "目标实际所属 Story 与请求不一致。"); }
+                storyType = actualStoryType;
                 TrimDocumentMarkers(range);
                 return CreateTarget(range, storyType, locator, target);
             }
@@ -197,7 +202,7 @@ namespace ChatWord.AddIn.Hosts
                 if (!WordCom.TryGet(document, "StoryRanges", out stories) || stories == null) { return null; }
                 return WordCom.Item(stories, storyType);
             }
-            catch { WordCom.Release(stories); return null; }
+            catch { return null; }
             finally { WordCom.Release(stories); }
         }
 
@@ -212,7 +217,7 @@ namespace ChatWord.AddIn.Hosts
 
         private static void TrimDocumentMarkers(object range)
         {
-            var raw = WordCom.String(range, "Text");
+            var raw = WordCom.ReadText(range);
             if (string.IsNullOrEmpty(raw)) { return; }
             var visibleLength = raw.Length;
             while (visibleLength > 0 && (raw[visibleLength - 1] == '\r' || raw[visibleLength - 1] == '\a')) { visibleLength--; }
@@ -221,7 +226,22 @@ namespace ChatWord.AddIn.Hosts
             {
                 var start = WordCom.Int(range, "Start");
                 var end = WordCom.Int(range, "End");
-                try { WordCom.Call(range, "SetRange", start, Math.Max(start, end - trim)); } catch { }
+                if (end <= start) { return; }
+                object tail = null;
+                try
+                {
+                    // 单元格的 CR+BEL 可能只占一个 Word 位置，不能按字符串长度回退。
+                    tail = DuplicateAndSet(range, end - 1, end);
+                    while (end > start)
+                    {
+                        var marker = WordCom.ReadText(tail);
+                        if (string.IsNullOrEmpty(marker) || marker.TrimEnd('\r', '\a').Length != 0) { break; }
+                        end--;
+                        if (end > start) { WordCom.Call(tail, "SetRange", end - 1, end); }
+                    }
+                    WordCom.Call(range, "SetRange", start, end);
+                }
+                finally { WordCom.Release(tail); }
             }
         }
 

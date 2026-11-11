@@ -29,14 +29,14 @@ namespace ChatWord.AddIn.Tools
             object document = null; WordTarget target = null;
             try
             {
+                var argumentError = WordToolCatalog.ValidateArguments(name, args);
+                if (argumentError != null) { return new { supported = false, errorCode = argumentError.ErrorCode, error = argumentError.Error }; }
                 document = ActiveDocument();
                 if (document == null) { return new { supported = false, error = "当前没有打开的文档。" }; }
                 var effectiveArgs = args;
                 if (name == "edit_table")
                 {
-                    var tableTarget = args?["target"] as JObject != null ? (JObject)(args["target"] as JObject).DeepClone() : new JObject();
-                    tableTarget["table_index"] = args?.Value<int?>("table_index"); tableTarget["row"] = args?.Value<int?>("row"); tableTarget["column"] = args?.Value<int?>("column");
-                    effectiveArgs = new JObject { ["target"] = tableTarget, ["text"] = args?.Value<string>("text") ?? string.Empty };
+                    effectiveArgs = TableEditArguments(args);
                 }
                 target = WordTargetResolver.Resolve(document, effectiveArgs);
                 var before = SafeTextTarget(target);
@@ -73,6 +73,8 @@ namespace ChatWord.AddIn.Tools
         {
             try
             {
+                var argumentError = WordToolCatalog.ValidateArguments(name, args);
+                if (argumentError != null) { return argumentError; }
                 switch (name)
                 {
                     case "get_document_info": return ToolResult.Success(_context.GetSummary());
@@ -108,7 +110,7 @@ namespace ChatWord.AddIn.Tools
             try
             {
                 target = WordTargetResolver.Resolve(document, args);
-                var raw = WordCom.String(target.Range, "Text");
+                var raw = WordCom.ReadText(target.Range);
                 var text = WordDocumentContext.Sanitize(raw);
                 var offset = Math.Max(0, args?.Value<int?>("offset") ?? 0); var max = Math.Min(20000, Math.Max(1, args?.Value<int?>("max_chars") ?? 8000));
                 var page = offset >= text.Length ? string.Empty : text.Substring(offset, Math.Min(max, text.Length - offset));
@@ -543,7 +545,17 @@ namespace ChatWord.AddIn.Tools
         private ToolResult WriteText(object document, WordTarget target, string before, string expected, string undoId)
         {
             WordCom.Set(target.Range, "Text", expected);
-            var actual = WordCom.String(target.Range, "Text");
+            string actual;
+            try
+            {
+                actual = WordCom.ReadText(target.Range);
+                var start = Convert.ToInt32(WordCom.Get(target.Range, "Start"));
+                var end = Convert.ToInt32(WordCom.Get(target.Range, "End"));
+                if (start != target.Start || end < start) { throw new InvalidOperationException("写入后的目标位置已变化。"); }
+                target.End = end;
+            }
+            catch (Exception ex)
+            { return ToolResult.Failure("READBACK_FAILED", "文档已尝试写入，但无法确认目标读回；请重新读取文档：" + ex.GetBaseException().Message); }
             // Word/WPS 会把调用方传入的 LF 或 CRLF 段落换行存成 CR；按换行语义比较，
             // 避免多段落写入已经成功，却仅因宿主规范化换行而被误报为读回失败。
             if (!TextMatches(actual, expected))
@@ -568,7 +580,7 @@ namespace ChatWord.AddIn.Tools
 
         private static string SafeTextTarget(WordTarget target)
         {
-            var raw = WordCom.String(target.Range, "Text");
+            var raw = WordCom.ReadText(target.Range);
             if (ContainsMarkers(raw))
             { throw new WordToolException("STRUCTURE_UNSUPPORTED", "目标包含段落、单元格或分页标记；请缩小到纯文本区间。"); }
             foreach (var member in new[] { "Fields", "Bookmarks", "ContentControls", "Revisions" })
@@ -660,7 +672,37 @@ namespace ChatWord.AddIn.Tools
 
         private ToolResult EditTable(JObject args, string undoId)
         {
-            var target = args?["target"] as JObject ?? new JObject(); target["table_index"] = args.Value<int?>("table_index"); target["row"] = args.Value<int?>("row"); target["column"] = args.Value<int?>("column"); return SetText(new JObject { ["target"] = target, ["text"] = args.Value<string>("text") ?? string.Empty }, undoId, false);
+            var effectiveArgs = TableEditArguments(args);
+            object document = ActiveDocument(); WordTarget target = null;
+            try
+            {
+                target = WordTargetResolver.Resolve(document, effectiveArgs);
+                EnsureWritable(document);
+                var before = SafeTextTarget(target);
+                var expected = effectiveArgs.Value<string>("text");
+                if (ContainsMarkers(expected)) { throw new WordToolException("STRUCTURE_UNSUPPORTED", "单元格内容不能包含文档控制字符。"); }
+                return WriteText(document, target, before, expected, undoId);
+            }
+            finally { target?.Dispose(); WordCom.Release(document); }
+        }
+
+        private static JObject TableEditArguments(JObject args)
+        {
+            var target = args?["target"] is JObject nested ? (JObject)nested.DeepClone() : new JObject();
+            foreach (var key in new[] { "table_index", "row", "column" })
+            {
+                var outer = args?.Value<int?>(key);
+                var inner = target.Value<int?>(key);
+                if (outer.HasValue && outer.Value != 0)
+                {
+                    if (inner.HasValue && inner.Value != 0 && inner.Value != outer.Value)
+                    { throw new WordToolException("TARGET_AMBIGUOUS", "表格参数 " + key + " 与 target 内的定位冲突。"); }
+                    target[key] = outer.Value;
+                }
+                if (target.Value<int?>(key).GetValueOrDefault() < 1)
+                { throw new WordToolException("TARGET_INVALID", "表格目标必须包含从 1 开始的 table_index、row 和 column。"); }
+            }
+            return new JObject { ["target"] = target, ["text"] = args.Value<string>("text") };
         }
 
         private ToolResult SetPageSetup(JObject args)
@@ -673,7 +715,24 @@ namespace ChatWord.AddIn.Tools
         private ToolResult InsertPageBreak(JObject args, string undoId)
         {
             object document = ActiveDocument(); WordTarget target = null;
-            try { target = WordTargetResolver.Resolve(document, args); EnsureWritable(document); WordCom.Call(target.Range, "InsertBreak", 7); var after = WordDocumentContext.Sanitize(WordCom.String(target.Range, "Text")); return ToolResult.Success(new { story = target.Story, start = target.Start, end = target.End, inserted = true, readback = after, canUndo = false, undoNote = "分页符操作未保存完整快照，不能提供虚假撤销。" }); }
+            try
+            {
+                target = WordTargetResolver.Resolve(document, args);
+                EnsureWritable(document);
+                if (!target.IsCollapsed) { throw new WordToolException("TARGET_INVALID", "插入分页符必须使用折叠的 Start/End 位置，不能替换已有文字。"); }
+                WordCom.Call(target.Range, "InsertBreak", 7);
+                string after;
+                try
+                {
+                    WordCom.Call(target.Range, "SetRange", target.Start, target.Start + 1);
+                    after = WordCom.ReadText(target.Range);
+                    if (after != "\f") { throw new InvalidOperationException("指定位置没有读回分页符。"); }
+                    target.End = Convert.ToInt32(WordCom.Get(target.Range, "End"));
+                }
+                catch (Exception ex)
+                { throw new WordToolException("READBACK_FAILED", "已尝试插入分页符，但无法确认结果：" + ex.GetBaseException().Message); }
+                return ToolResult.Success(new { story = target.Story, start = target.Start, end = target.End, inserted = true, readback = after, canUndo = false, undoNote = "分页符操作未保存完整快照，不能提供虚假撤销。" });
+            }
             finally { target?.Dispose(); WordCom.Release(document); }
         }
 

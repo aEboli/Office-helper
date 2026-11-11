@@ -26,9 +26,28 @@ namespace ChatSheet.ToolTests
     {
         internal static void Run(Action<string, bool, string> report)
         {
+            TestUnrelatedRequestDoesNotConsumeReply(report);
             TestCountResetsAfterSuccess(report);
             TestCountResetsBetweenRequests(report);
             TestBudgetNotConsumedAcrossRequests(report);
+        }
+
+        private static void TestUnrelatedRequestDoesNotConsumeReply(Action<string, bool, string> report)
+        {
+            using (var server = new ScriptedServer())
+            {
+                server.Enqueue(Reply.Stream("仍可使用"));
+                using (var probe = new TcpClient("127.0.0.1", server.Port))
+                using (var stream = probe.GetStream())
+                {
+                    stream.ReadTimeout = 3000;
+                    var bytes = Encoding.ASCII.GetBytes("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+                    stream.Write(bytes, 0, bytes.Length);
+                    var response = new byte[1024];
+                    while (stream.Read(response, 0, response.Length) > 0) { }
+                }
+                report("本机端口探测不消耗重试响应或计数", server.RequestCount == 0, server.RequestCount.ToString());
+            }
         }
 
         /// <summary>
@@ -299,6 +318,12 @@ namespace ChatSheet.ToolTests
                 {
                     var headers = ReadHeaders(stream);
                     if (headers == null) { return; }
+
+                    if (!headers.StartsWith("POST /v1/chat/completions HTTP/", StringComparison.Ordinal))
+                    {
+                        Write(stream, Reply.Unavailable());
+                        return;
+                    }
 
                     DrainBody(stream, headers);
                     Interlocked.Increment(ref _requestCount);

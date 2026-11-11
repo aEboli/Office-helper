@@ -185,12 +185,16 @@ namespace ChatWord.AddIn.Bridge
         {
             var id = "word-approval-" + Interlocked.Increment(ref _approvalSequence); var source = new TaskCompletionSource<ApprovalDecision>(TaskCreationOptions.RunContinuationsAsynchronously); _approvals[id] = source;
             _ = PushRawAsync(new { kind = "approval-request", id, tool = definition.Name, risk = definition.Risk.ToString(), args, impact = impact?.Text, impactNote = impact?.Note, hostPreview = impact?.HostPreview, host = "Word/WPS Writer" });
-            return AwaitApproval(id, source.Task);
+            return AwaitApproval(id, source, Volatile.Read(ref _run)?.Token ?? CancellationToken.None);
         }
 
-        private async Task<ApprovalDecision> AwaitApproval(string id, Task<ApprovalDecision> task)
+        private async Task<ApprovalDecision> AwaitApproval(string id, TaskCompletionSource<ApprovalDecision> source, CancellationToken cancellationToken)
         {
-            try { return await task.ConfigureAwait(false); } finally { _approvals.TryRemove(id, out _); }
+            using (cancellationToken.Register(() => source.TrySetCanceled()))
+            {
+                try { return await source.Task.ConfigureAwait(false); }
+                finally { _approvals.TryRemove(id, out _); }
+            }
         }
 
         private Task<object> RespondApprovalAsync(JObject payload)
@@ -236,7 +240,17 @@ namespace ChatWord.AddIn.Bridge
         {
             if (_disposed) { return Task.FromException<object>(new OperationCanceledException("文档面板已关闭。")); }
             if (_uiContext == null || SynchronizationContext.Current == _uiContext) { try { return Task.FromResult(work()); } catch (Exception ex) { return Task.FromException<object>(ex); } }
-            var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously); _uiContext.Post(_ => { try { tcs.TrySetResult(work()); } catch (Exception ex) { tcs.TrySetException(ex); } }, null); return tcs.Task;
+            var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _uiContext.Post(_ =>
+            {
+                try
+                {
+                    if (_disposed) { throw new OperationCanceledException("文档面板已关闭。"); }
+                    tcs.TrySetResult(work());
+                }
+                catch (Exception ex) { tcs.TrySetException(ex); }
+            }, null);
+            return tcs.Task;
         }
         private async void OnWebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
         {

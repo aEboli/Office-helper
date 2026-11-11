@@ -45,10 +45,10 @@ namespace ChatWord.AddIn.Tools
             {
                 if (entry.StoryType != 1) { message = "非正文目标没有可靠快照撤销。"; return false; }
                 range = WordCom.Call(document, "Range", entry.Start, entry.End);
-                if (!string.Equals(WordCom.String(range, "Text"), entry.After, StringComparison.Ordinal))
+                if (!string.Equals(WordCom.ReadText(range), entry.After, StringComparison.Ordinal))
                 { message = "目标文本已移动或再次修改，快照不能安全撤销。"; return false; }
                 WordCom.Set(range, "Text", entry.Before);
-                var readback = WordCom.String(range, "Text");
+                var readback = WordCom.ReadText(range);
                 if (!string.Equals(readback, entry.Before, StringComparison.Ordinal))
                 { message = "撤销读回结果不一致。"; return false; }
                 entry.Consumed = true; message = "已根据文档快照撤销实际改动。"; return true;

@@ -14,6 +14,7 @@ namespace ChatSheet.AddIn.Providers
     internal sealed class AnthropicStreamParser : StreamParser
     {
         private readonly Dictionary<int, string> _blockTypes = new Dictionary<int, string>();
+        private readonly HashSet<int> _inputDeltas = new HashSet<int>();
         private int _promptTokens;
 
         /// <summary>
@@ -27,6 +28,7 @@ namespace ChatSheet.AddIn.Providers
 
         internal override IEnumerable<ChatEvent> Parse(SseFrame frame)
         {
+            if (Completed) { yield break; }
             var root = TryParse(frame.Data);
             if (root == null) { yield break; }
 
@@ -51,11 +53,12 @@ namespace ChatSheet.AddIn.Providers
 
                     if (string.Equals(blockType, "tool_use", StringComparison.Ordinal))
                     {
+                        _inputDeltas.Remove(index);
                         PendingCalls[index] = new ToolCall
                         {
                             Id = block.Value<string>("id"),
                             Name = block.Value<string>("name"),
-                            ArgumentsJson = string.Empty,
+                            ArgumentsJson = (block["input"] ?? new JObject()).ToString(Newtonsoft.Json.Formatting.None),
                         };
                     }
 
@@ -89,7 +92,8 @@ namespace ChatSheet.AddIn.Providers
                         var partial = delta.Value<string>("partial_json");
                         if (!string.IsNullOrEmpty(partial) && PendingCalls.TryGetValue(index, out var call))
                         {
-                            call.ArgumentsJson += partial;
+                            // start 中的 input 是初始对象；首个增量从头构造参数，不能拼在 {} 后面。
+                            call.ArgumentsJson = _inputDeltas.Add(index) ? partial : call.ArgumentsJson + partial;
                         }
                     }
 
@@ -109,6 +113,7 @@ namespace ChatSheet.AddIn.Providers
                     }
 
                     _blockTypes.Remove(index);
+                    _inputDeltas.Remove(index);
                     break;
                 }
 
@@ -133,6 +138,7 @@ namespace ChatSheet.AddIn.Providers
 
                 case "message_stop":
                 {
+                    Completed = true;
                     foreach (var e in Flush()) { yield return e; }
                     yield return new ChatEvent { Kind = ChatEventKind.Completed, FinishReason = _stopReason };
                     break;
@@ -179,7 +185,7 @@ namespace ChatSheet.AddIn.Providers
                 };
             }
 
-            if (!(root["candidates"] is JArray candidates) || candidates.Count == 0)
+            if (Completed || !(root["candidates"] is JArray candidates) || candidates.Count == 0)
             {
                 yield break;
             }
@@ -201,8 +207,9 @@ namespace ChatSheet.AddIn.Providers
                             Kind = ChatEventKind.ToolCall,
                             Call = new ToolCall
                             {
-                                // Gemini 不提供调用标识，用工具名加随机后缀构造一个。
-                                Id = (functionCall.Value<string>("name") ?? "call") + "-" + Guid.NewGuid().ToString("N").Substring(0, 8),
+                                // 优先保留服务端标识，只有旧响应未提供时才生成本地标识。
+                                Id = functionCall.Value<string>("id") ??
+                                    (functionCall.Value<string>("name") ?? "call") + "-" + Guid.NewGuid().ToString("N").Substring(0, 8),
                                 Name = functionCall.Value<string>("name"),
                                 ArgumentsJson = (functionCall["args"] ?? new JObject()).ToString(Newtonsoft.Json.Formatting.None),
                             },
@@ -226,6 +233,7 @@ namespace ChatSheet.AddIn.Providers
             var finish = candidate?.Value<string>("finishReason");
             if (!string.IsNullOrEmpty(finish))
             {
+                Completed = true;
                 yield return new ChatEvent { Kind = ChatEventKind.Completed, FinishReason = finish };
             }
         }

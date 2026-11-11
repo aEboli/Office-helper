@@ -61,8 +61,15 @@ namespace ChatSheet.AddIn.Tools
 
             try
             {
-                return token.Value<double>();
+                var value = token.Value<double>();
+                if (double.IsNaN(value) || double.IsInfinity(value))
+                {
+                    throw new ToolException("ARG_INVALID", $"参数 {name} 应为有限数字，收到「{token}」。");
+                }
+
+                return value;
             }
+            catch (ToolException) { throw; }
             catch
             {
                 throw new ToolException("ARG_INVALID", $"参数 {name} 应为数字。");
@@ -105,7 +112,12 @@ namespace ChatSheet.AddIn.Tools
                         throw new ToolException("ARG_INVALID", $"{key} 的第 {r + 1} 行不是数组。");
                     }
 
-                    columns = Math.Max(columns, rowArray.Count);
+                    if (r == 0) { columns = rowArray.Count; }
+                    else if (rowArray.Count != columns)
+                    {
+                        throw new ToolException("SHAPE_MISMATCH",
+                            $"{key} 的第 {r + 1} 行有 {rowArray.Count} 列，与首行的 {columns} 列不一致。请显式提供每个单元格，空值使用 null。");
+                    }
                 }
 
                 if (rows != range.Rows || columns != range.Columns)
@@ -122,8 +134,7 @@ namespace ChatSheet.AddIn.Tools
                     var rowArray = (JArray)matrix[r];
                     for (var c = 0; c < columns; c++)
                     {
-                        var token = c < rowArray.Count ? rowArray[c] : null;
-                        buffer[r, c] = ConvertCell(token, formulas, r, c);
+                        buffer[r, c] = ConvertCell(rowArray[c], formulas, r, c);
                     }
                 }
 
@@ -147,10 +158,13 @@ namespace ChatSheet.AddIn.Tools
                                         block[br, bc] = buffer[r + br, c + bc];
                                 var blockAddress = ColumnName(firstColumn + c) + (firstRow + r) + ":" +
                                     ColumnName(firstColumn + c + blockColumns - 1) + (firstRow + r + blockRows - 1);
-                                using (var target = _resolver.Resolve(blockAddress, range.SheetName))
+                                object target = null;
+                                try
                                 {
-                                    Com.Set(target.Range, formulas ? "Formula" : "Value2", block);
+                                    target = Com.Get(range.Worksheet, "Range", blockAddress);
+                                    Com.Set(target, formulas ? "Formula" : "Value2", block);
                                 }
+                                finally { Com.Release(target); }
                                 completed += (long)blockRows * blockColumns;
                             }
                             r += blockRows;
@@ -162,8 +176,7 @@ namespace ChatSheet.AddIn.Tools
                             new { sheet = range.SheetName, address = range.Address, cells_written = completed,
                                 next_offset = completed, host_may_have_modified_failed_block = true });
                     }
-                    var verification = ReadRange(new JObject { ["range"] = range.Address, ["sheet"] = range.SheetName,
-                        ["include_formulas"] = formulas });
+                    var verification = ReadRange(range, new JObject { ["include_formulas"] = formulas });
                     return ToolResult.Success(new Dictionary<string, object> {
                         ["sheet"] = range.SheetName, ["address"] = range.Address, ["cells_written"] = completed,
                         ["verification_page"] = verification.Data,
@@ -190,6 +203,11 @@ namespace ChatSheet.AddIn.Tools
             if (token == null || token.Type == JTokenType.Null)
             {
                 return formulas ? (object)string.Empty : null;
+            }
+
+            if (token is JContainer)
+            {
+                throw new ToolException("ARG_INVALID", $"第 {row + 1} 行第 {column + 1} 列必须是单元格标量，不能是 {token.Type}。");
             }
 
             if (formulas)
@@ -222,6 +240,22 @@ namespace ChatSheet.AddIn.Tools
         {
             var address = RequireString(args, "range");
             var sheet = OptionalString(args, "sheet");
+            var bold = OptionalBool(args, "bold");
+            var italic = OptionalBool(args, "italic");
+            var size = OptionalNumber(args, "font_size");
+            if (size.HasValue && (size.Value < 1 || size.Value > 409))
+            {
+                throw new ToolException("ARG_INVALID", "font_size 必须在 1 到 409 之间。");
+            }
+            var fontColor = OptionalString(args, "font_color");
+            var fontColorValue = fontColor == null ? (int?)null : ParseColor(fontColor, "font_color");
+            var fillColor = OptionalString(args, "fill_color");
+            var fillColorValue = fillColor == null ? (int?)null : ParseColor(fillColor, "fill_color");
+            var alignment = OptionalString(args, "horizontal_alignment");
+            var alignmentValue = alignment == null ? (int?)null : ParseAlignment(alignment);
+            var vertical = OptionalString(args, "vertical_alignment");
+            var verticalValue = vertical == null ? (int?)null : ParseVerticalAlignment(vertical);
+            var wrap = OptionalBool(args, "wrap_text");
 
             using (var range = _resolver.Resolve(address, sheet))
             {
@@ -234,50 +268,37 @@ namespace ChatSheet.AddIn.Tools
                 {
                     font = Com.Get(range.Range, "Font");
 
-                    var bold = OptionalBool(args, "bold");
                     if (bold.HasValue) { Com.Set(font, "Bold", bold.Value); applied.Add("bold"); }
 
-                    var italic = OptionalBool(args, "italic");
                     if (italic.HasValue) { Com.Set(font, "Italic", italic.Value); applied.Add("italic"); }
 
-                    var size = OptionalNumber(args, "font_size");
                     if (size.HasValue)
                     {
-                        if (size.Value < 1 || size.Value > 409)
-                        {
-                            throw new ToolException("ARG_INVALID", "font_size 必须在 1 到 409 之间。");
-                        }
-
                         Com.Set(font, "Size", size.Value);
                         applied.Add("font_size");
                     }
 
-                    var fontColor = OptionalString(args, "font_color");
-                    if (fontColor != null) { Com.Set(font, "Color", ParseColor(fontColor, "font_color")); applied.Add("font_color"); }
+                    if (fontColorValue.HasValue) { Com.Set(font, "Color", fontColorValue.Value); applied.Add("font_color"); }
 
-                    var fillColor = OptionalString(args, "fill_color");
-                    if (fillColor != null)
+                    if (fillColorValue.HasValue)
                     {
                         interior = Com.Get(range.Range, "Interior");
-                        Com.Set(interior, "Color", ParseColor(fillColor, "fill_color"));
+                        Com.Set(interior, "Color", fillColorValue.Value);
                         applied.Add("fill_color");
                     }
 
-                    var alignment = OptionalString(args, "horizontal_alignment");
-                    if (alignment != null)
+                    if (alignmentValue.HasValue)
                     {
-                        Com.Set(range.Range, "HorizontalAlignment", ParseAlignment(alignment));
+                        Com.Set(range.Range, "HorizontalAlignment", alignmentValue.Value);
                         applied.Add("horizontal_alignment");
                     }
 
-                    var vertical = OptionalString(args, "vertical_alignment");
-                    if (vertical != null)
+                    if (verticalValue.HasValue)
                     {
-                        Com.Set(range.Range, "VerticalAlignment", ParseVerticalAlignment(vertical));
+                        Com.Set(range.Range, "VerticalAlignment", verticalValue.Value);
                         applied.Add("vertical_alignment");
                     }
 
-                    var wrap = OptionalBool(args, "wrap_text");
                     if (wrap.HasValue) { Com.Set(range.Range, "WrapText", wrap.Value); applied.Add("wrap_text"); }
                 }
                 finally

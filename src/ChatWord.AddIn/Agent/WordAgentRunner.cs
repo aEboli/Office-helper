@@ -31,6 +31,11 @@ namespace ChatWord.AddIn.Agent
         private bool _draftOnlyForCurrentTurn;
         private bool _draftInsertAllowedForCurrentTurn;
 
+        // 本轮是否走文本协议（WorkBuddy）。工具结果的回灌形态由它决定：
+        // 文本协议没有 tool 角色可用，结果只能作为 user 消息发出去。
+        // PublishResultAsync 的签名里拿不到连接信息，所以在开轮时记下来、轮末复位。
+        private bool _textProtocol;
+
         internal WordAgentRunner(Func<object> applicationAccessor, string progId, Func<Func<object>, Task<object>> uiInvoker = null)
         {
             _applicationAccessor = applicationAccessor ?? throw new ArgumentNullException(nameof(applicationAccessor));
@@ -74,6 +79,7 @@ namespace ChatWord.AddIn.Agent
             string draftId = null)
         {
             if (string.IsNullOrWhiteSpace(userInput)) { throw new ProviderException("EMPTY_INPUT", "请输入内容。"); }
+            cancellationToken.ThrowIfCancellationRequested();
             lock (_approvalLock)
             {
                 _activeSettings = settings;
@@ -86,8 +92,12 @@ namespace ChatWord.AddIn.Agent
             {
                 var connection = settings.ResolveConnection();
                 if (!connection.IsWorkBuddy && string.IsNullOrWhiteSpace(connection.Model)) { throw new ProviderException("MODEL_REQUIRED", "尚未选择模型，请到设置页选择。"); }
+                // WorkBuddy 恒定走文本协议（见 StreamAsync 里的 gate）；
+                // 本轮的工具消息形状收尾时还要用，开轮先记下来，免得后面再猜一次。
+                _textProtocol = connection.IsWorkBuddy;
                 var documentSnapshot = (Tuple<WordDocumentSummary, WordSelectionInfo, WordSelectionInfo>)await _uiInvoker(() =>
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var currentSummary = _context.GetSummary();
                     var currentSelection = _context.GetSelection(settings.AutoIncludeSelection);
                     var draftTarget = settings.AutoIncludeSelection ? currentSelection : _context.GetSelection();
@@ -104,6 +114,18 @@ namespace ChatWord.AddIn.Agent
                         "，保留草稿的 operation 和目标；只按用户要求更新内容或风格，不得新建另一份草稿或插入文档。";
                 }
                 _conversation.SetSystemPrompt(systemPrompt);
+
+                // 开轮先修一次历史：配不上的工具调用/结果会被服务端整轮拒绝
+                // （OpenAI 400 / 网关 502 "No tool output found for function call …"），
+                // 而历史只会重发不会自愈，一次故障能把之后每一轮都拖死。
+                var historyRepair = MessageRepair.Repair(_conversation.Messages);
+                if (historyRepair.Changed)
+                {
+                    _conversation.ReplaceAll(historyRepair.Messages);
+                    ChatSheet.AddIn.Log.Warn($"历史修复：摘掉 {historyRepair.DroppedCalls} 个没有结果的工具调用、" +
+                        $"{historyRepair.DroppedResults} 条没有调用的工具结果");
+                }
+
                 _conversation.Add(ChatMessage.FromUser(userInput));
 
                 using (var client = CreateClient(settings, connection))
@@ -112,8 +134,8 @@ namespace ChatWord.AddIn.Agent
                     {
                         cancellationToken.ThrowIfCancellationRequested();
                         var outcome = await StreamAsync(client, connection, settings, onUpdate, cancellationToken).ConfigureAwait(false);
-                        var assistant = ChatMessage.FromAssistant(outcome.RawText ?? outcome.Text ?? string.Empty);
-                        assistant.ToolCalls.AddRange(outcome.Calls);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var assistant = BuildStepMessage(outcome.RawText ?? outcome.Text ?? string.Empty, outcome.Calls, _textProtocol);
                         _conversation.Add(assistant);
                         if (outcome.Calls.Count == 0)
                         {
@@ -139,9 +161,32 @@ namespace ChatWord.AddIn.Agent
                         _activeSettings = null;
                         _draftOnlyForCurrentTurn = false;
                         _draftInsertAllowedForCurrentTurn = false;
+                        _textProtocol = false;
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// 把本步产出的助手消息记进历史。
+        ///
+        /// 只有原生形态才把调用挂上去。文本形态的调用已经写在正文的指令块里，
+        /// 结果又只能以 user 消息回灌（协议里没有 tool 角色），再挂一份 tool_calls
+        /// 就变成「有调用、没结果」：OpenAI 系回 400
+        /// （assistant message with 'tool_calls' must be followed by tool messages），
+        /// 网关回 502（No tool output found for function call fc_txt1-739998）。
+        /// 更糟的是这条坏消息会随历史一直重发，之后每一轮、换任何模型都整轮失败。
+        /// </summary>
+        internal static ChatMessage BuildStepMessage(string rawText, IReadOnlyList<ToolCall> calls, bool textProtocol)
+        {
+            var message = ChatMessage.FromAssistant(rawText ?? string.Empty);
+
+            if (!textProtocol && calls != null)
+            {
+                message.ToolCalls.AddRange(calls);
+            }
+
+            return message;
         }
 
         private async Task<ToolResult> ExecuteCallAsync(
@@ -155,14 +200,26 @@ namespace ChatWord.AddIn.Agent
             ToolDefinition definitionOverride = null,
             bool recordInConversation = true)
         {
-            if (call.Name == "draft_document")
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(call.Name))
             {
-                return await CreateDraftAsync(call, documentKey, draftTarget, onUpdate, recordInConversation).ConfigureAwait(false);
+                var truncated = TurnOutcome.LooksTruncatedJson(call.ArgumentsJson);
+                var invalid = ToolResult.Failure(truncated ? "ARGS_TRUNCATED" : "BLOCK_INVALID",
+                    truncated ? "指令块被截断，无法读取工具名。请缩小单次内容并重发完整指令块。" : "指令块缺少有效工具名，请提供 tool 和 args 字段。");
+                await PublishResultAsync(call, invalid, onUpdate, recordInConversation).ConfigureAwait(false);
+                return invalid;
             }
 
             JObject args;
             try { args = string.IsNullOrWhiteSpace(call.ArgumentsJson) ? new JObject() : JObject.Parse(call.ArgumentsJson); }
-            catch { args = new JObject(); }
+            catch (JsonException ex)
+            {
+                var truncated = TurnOutcome.LooksTruncatedJson(call.ArgumentsJson);
+                var invalid = ToolResult.Failure(truncated ? "ARGS_TRUNCATED" : "ARGS_INVALID",
+                    truncated ? TurnOutcome.DescribeTruncatedArguments(call.Name, call.ArgumentsJson.Length) : "参数不是合法 JSON 对象：" + ex.Message);
+                await PublishResultAsync(call, invalid, onUpdate, recordInConversation).ConfigureAwait(false);
+                return invalid;
+            }
 
             if (definitionOverride == null && !_definitions.TryGetValue(call.Name, out definitionOverride))
             {
@@ -171,6 +228,17 @@ namespace ChatWord.AddIn.Agent
                 return unknown;
             }
             var definition = definitionOverride;
+            var argumentError = WordToolCatalog.ValidateArguments(call.Name, args);
+            if (argumentError != null)
+            {
+                await PublishResultAsync(call, argumentError, onUpdate, recordInConversation).ConfigureAwait(false);
+                return argumentError;
+            }
+
+            if (call.Name == "draft_document")
+            {
+                return await CreateDraftAsync(call, args, documentKey, draftTarget, onUpdate, recordInConversation, cancellationToken).ConfigureAwait(false);
+            }
 
             if (IsDraftOnlyTurn() && definition.Risk != ToolRisk.Read &&
                 !(call.Name == "insert_document_draft" && IsDraftInsertAllowed()))
@@ -206,6 +274,7 @@ namespace ChatWord.AddIn.Agent
             {
                 var approvalPreview = (ApprovalPreview)await _uiInvoker(() =>
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var currentSummary = _context.GetSummary();
                     return new ApprovalPreview
                     {
@@ -229,12 +298,14 @@ namespace ChatWord.AddIn.Agent
                     return unsupported;
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
                 var decision = await requestApproval(definition, args, new ImpactEstimate
                 {
                     Text = BuildImpact(definition, args),
                     Note = "Word/WPS Writer 写操作会在当前审批后执行；审批前仅读取目标生成预览。",
                     HostPreview = approvalPreview.Preview,
                 }).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 if (decision == null || !decision.Approved)
                 {
                     var denied = ToolResult.Failure("APPROVAL_DENIED", decision?.Reason ?? "用户拒绝了文档操作。");
@@ -261,12 +332,14 @@ namespace ChatWord.AddIn.Agent
             {
                 result = (ToolResult)await _uiInvoker(() =>
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var currentKey = WordDocumentContext.DocumentKey(_context.GetSummary());
                     return string.Equals(documentKey, currentKey, StringComparison.Ordinal)
                         ? _tools.Execute(call.Name, args, undoId)
                         : ToolResult.Failure("DOCUMENT_CHANGED", "任务开始后当前文档已切换，已拒绝在另一份文档中继续操作。");
                 }).ConfigureAwait(false);
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex) { result = ToolResult.Failure("HOST_ERROR", ex.Message); }
             await PublishResultAsync(call, result, onUpdate, recordInConversation).ConfigureAwait(false);
             if (result.Ok && draftIdToClose != null)
@@ -277,13 +350,14 @@ namespace ChatWord.AddIn.Agent
             return result;
         }
 
-        private async Task<ToolResult> CreateDraftAsync(ToolCall call, string documentKey, WordSelectionInfo draftTarget, Func<AgentUpdate, Task> onUpdate, bool recordInConversation)
+        private async Task<ToolResult> CreateDraftAsync(ToolCall call, JObject args, string documentKey, WordSelectionInfo draftTarget, Func<AgentUpdate, Task> onUpdate, bool recordInConversation, CancellationToken cancellationToken)
         {
-            JObject args;
-            try { args = string.IsNullOrWhiteSpace(call.ArgumentsJson) ? new JObject() : JObject.Parse(call.ArgumentsJson); }
-            catch { args = new JObject(); }
-
-            var currentSummary = (WordDocumentSummary)await _uiInvoker(() => _context.GetSummary()).ConfigureAwait(false);
+            var currentSummary = (WordDocumentSummary)await _uiInvoker(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return _context.GetSummary();
+            }).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
             if (!string.Equals(documentKey, WordDocumentContext.DocumentKey(currentSummary), StringComparison.Ordinal))
             {
                 return await StoreDraftToolResult(call, ToolResult.Failure("DOCUMENT_CHANGED", "生成期间活动文档已切换；请在目标文档中重新生成草稿。"), onUpdate, recordInConversation).ConfigureAwait(false);
@@ -304,6 +378,8 @@ namespace ChatWord.AddIn.Agent
             try { draft = WordDocumentDraft.Create(documentKey, currentSummary.Name, draftTarget, args, existing); }
             catch (WordToolException ex)
             { return await StoreDraftToolResult(call, ToolResult.Failure(ex.Code, ex.Message), onUpdate, recordInConversation).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is InvalidCastException || ex is FormatException || ex is OverflowException || ex is ArgumentException)
+            { return await StoreDraftToolResult(call, ToolResult.Failure("DRAFT_INVALID", "草稿内容块参数类型无效：" + ex.Message), onUpdate, recordInConversation).ConfigureAwait(false); }
 
             lock (_draftLock) { _drafts[draft.Id] = draft; }
             if (recordInConversation) { AddResult(call, ToolResult.Success(draft.ToModelResult())); }
@@ -488,7 +564,20 @@ namespace ChatWord.AddIn.Agent
 
         private void AddResult(ToolCall call, ToolResult result)
         {
-            _conversation.Add(ChatMessage.FromToolResult(call.Id, call.Name, JsonConvert.SerializeObject(result.ToPayload())));
+            _conversation.Add(BuildToolResultMessage(call, JsonConvert.SerializeObject(result.ToPayload()), _textProtocol));
+        }
+
+        /// <summary>
+        /// 构造工具结果消息。形态跟着本轮协议走：
+        /// 文本协议（WorkBuddy）没有 tool_call_id 可用，结果只能作为 user 消息回灌，
+        /// 但仍标记出工具结果身份，好让上下文压缩继续优先压它们；
+        /// 原生协议必须用 tool 消息并带上调用标识，否则服务端认不出这是哪次调用的结果。
+        /// </summary>
+        internal static ChatMessage BuildToolResultMessage(ToolCall call, string json, bool textProtocol)
+        {
+            return textProtocol
+                ? ChatMessage.FromTextProtocolToolResult(call.Name, $"（工具执行结果 · {call.Name}）\n{json}")
+                : ChatMessage.FromToolResult(call.Id, call.Name, json);
         }
 
         private async Task<StepOutcome> StreamAsync(

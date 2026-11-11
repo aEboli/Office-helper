@@ -449,9 +449,11 @@ namespace ChatSheet.AddIn.Providers
         {
             var messages = new JArray();
             string systemPrompt = null;
+            JArray resultBlocks = null;
 
             foreach (var message in source)
             {
+                if (message.Role != ChatRole.Tool) { resultBlocks = null; }
                 if (message.Role == ChatRole.System)
                 {
                     // Anthropic 的系统提示是顶层字段，不在 messages 里。
@@ -463,18 +465,20 @@ namespace ChatSheet.AddIn.Providers
 
                 if (message.Role == ChatRole.Tool)
                 {
-                    messages.Add(new JObject
+                    if (resultBlocks == null)
                     {
-                        ["role"] = "user",
-                        ["content"] = new JArray
+                        resultBlocks = new JArray();
+                        messages.Add(new JObject
                         {
-                            new JObject
-                            {
-                                ["type"] = "tool_result",
-                                ["tool_use_id"] = message.ToolCallId,
-                                ["content"] = message.Content ?? string.Empty,
-                            },
-                        },
+                            ["role"] = "user",
+                            ["content"] = resultBlocks,
+                        });
+                    }
+                    resultBlocks.Add(new JObject
+                    {
+                        ["type"] = "tool_result",
+                        ["tool_use_id"] = message.ToolCallId,
+                        ["content"] = message.Content ?? string.Empty,
                     });
                     continue;
                 }
@@ -655,9 +659,11 @@ namespace ChatSheet.AddIn.Providers
         {
             var contents = new JArray();
             JObject systemInstruction = null;
+            JArray resultParts = null;
 
             foreach (var message in source)
             {
+                if (message.Role != ChatRole.Tool) { resultParts = null; }
                 if (message.Role == ChatRole.System)
                 {
                     systemInstruction = new JObject
@@ -669,22 +675,23 @@ namespace ChatSheet.AddIn.Providers
 
                 if (message.Role == ChatRole.Tool)
                 {
-                    contents.Add(new JObject
+                    if (resultParts == null)
                     {
-                        ["role"] = "user",
-                        ["parts"] = new JArray
+                        resultParts = new JArray();
+                        contents.Add(new JObject
                         {
-                            new JObject
-                            {
-                                ["functionResponse"] = new JObject
-                                {
-                                    ["name"] = message.ToolName ?? string.Empty,
-                                    // Gemini 要求响应是对象，字符串需包一层。
-                                    ["response"] = new JObject { ["result"] = message.Content ?? string.Empty },
-                                },
-                            },
-                        },
-                    });
+                            ["role"] = "user",
+                            ["parts"] = resultParts,
+                        });
+                    }
+                    var response = new JObject
+                    {
+                        ["name"] = message.ToolName ?? string.Empty,
+                        // Gemini 要求响应是对象，字符串需包一层。
+                        ["response"] = new JObject { ["result"] = message.Content ?? string.Empty },
+                    };
+                    if (!string.IsNullOrEmpty(message.ToolCallId)) { response["id"] = message.ToolCallId; }
+                    resultParts.Add(new JObject { ["functionResponse"] = response });
                     continue;
                 }
 
@@ -698,13 +705,15 @@ namespace ChatSheet.AddIn.Providers
 
                     foreach (var call in message.ToolCalls)
                     {
+                        var function = new JObject
+                        {
+                            ["name"] = call.Name,
+                            ["args"] = ParseArgumentsOrEmpty(call.ArgumentsJson),
+                        };
+                        if (!string.IsNullOrEmpty(call.Id)) { function["id"] = call.Id; }
                         callParts.Add(new JObject
                         {
-                            ["functionCall"] = new JObject
-                            {
-                                ["name"] = call.Name,
-                                ["args"] = ParseArgumentsOrEmpty(call.ArgumentsJson),
-                            },
+                            ["functionCall"] = function,
                         });
                     }
 

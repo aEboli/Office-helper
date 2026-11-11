@@ -15,6 +15,7 @@ namespace ChatSheet.AddIn.Providers
     {
         /// <summary>按索引累积的工具调用。</summary>
         protected readonly Dictionary<int, ToolCall> PendingCalls = new Dictionary<int, ToolCall>();
+        protected bool Completed;
 
         internal static StreamParser Create(ProtocolKind kind)
         {
@@ -37,8 +38,9 @@ namespace ChatSheet.AddIn.Providers
         /// <summary>流结束时交付累积完成的工具调用。</summary>
         internal virtual IEnumerable<ChatEvent> Flush()
         {
-            foreach (var call in PendingCalls.Values)
+            foreach (var index in new SortedSet<int>(PendingCalls.Keys))
             {
+                var call = PendingCalls[index];
                 if (!string.IsNullOrEmpty(call.Name))
                 {
                     yield return new ChatEvent { Kind = ChatEventKind.ToolCall, Call = call };
@@ -79,6 +81,8 @@ namespace ChatSheet.AddIn.Providers
         {
             if (IsDone(frame))
             {
+                if (Completed) { yield break; }
+                Completed = true;
                 foreach (var e in Flush()) { yield return e; }
                 yield return new ChatEvent { Kind = ChatEventKind.Completed };
                 yield break;
@@ -117,7 +121,8 @@ namespace ChatSheet.AddIn.Providers
                 };
             }
 
-            if (!(root["choices"] is JArray choices) || choices.Count == 0)
+            // finish_reason 后仍可能有独立 usage 帧，但不能再次交付内容或完成事件。
+            if (Completed || !(root["choices"] is JArray choices) || choices.Count == 0)
             {
                 yield break;
             }
@@ -170,6 +175,7 @@ namespace ChatSheet.AddIn.Providers
             var finish = choice?.Value<string>("finish_reason");
             if (!string.IsNullOrEmpty(finish))
             {
+                Completed = true;
                 foreach (var e in Flush()) { yield return e; }
                 yield return new ChatEvent { Kind = ChatEventKind.Completed, FinishReason = finish };
             }
@@ -184,7 +190,7 @@ namespace ChatSheet.AddIn.Providers
 
         internal override IEnumerable<ChatEvent> Parse(SseFrame frame)
         {
-            if (IsDone(frame)) { yield break; }
+            if (Completed || IsDone(frame)) { yield break; }
 
             var root = TryParse(frame.Data);
             if (root == null) { yield break; }
@@ -260,6 +266,7 @@ namespace ChatSheet.AddIn.Providers
                 case "response.completed":
                 case "response.incomplete":
                 {
+                    Completed = true;
                     var response = root["response"] as JObject;
                     if (response?["output"] is JArray output)
                     {

@@ -1835,7 +1835,11 @@ namespace ChatSheet.AddIn.Agent
                 || result.ErrorCode == "ARG_INVALID" || result.ErrorCode == "ARGS_INVALID"))
             {
                 var repair = JObject.FromObject(payload);
-                repair["parameters"] = JObject.FromObject(definition.Parameters);
+                // 参数定义改用 ToolDefinition 构造期缓存的那一份：这里原来是整份 schema
+                // 再反射序列化一遍，而它和缓存值逐字节相同（已逐工具比对过）。
+                // 取 DeepClone 而不是直接塞进去，是为了不让共享实例被挂到这份临时对象下面——
+                // Schema 是所有轮次共用的，谁都不该改它，也不该持有它。
+                repair["parameters"] = definition.Schema.DeepClone();
                 payload = repair;
             }
             var json = JsonConvert.SerializeObject(payload, Formatting.None);

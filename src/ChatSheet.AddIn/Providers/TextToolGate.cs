@@ -21,6 +21,7 @@ namespace ChatSheet.AddIn.Providers
 
         /// <summary>已确认是围栏块的开头，正在等闭合。</summary>
         private bool _inBlock;
+        private bool _bufferAtLineStart = true;
 
         internal IReadOnlyList<TextToolCall> Calls => _calls;
 
@@ -66,14 +67,12 @@ namespace ChatSheet.AddIn.Providers
                         // 否则会先把 ``` 的前两个反引号显示出去。
                         var hold = final ? 0 : PartialFenceTail(text);
                         visible.Append(text, 0, text.Length - hold);
-                        _buffer.Clear();
-                        _buffer.Append(text, text.Length - hold, hold);
+                        ConsumePrefix(text.Length - hold);
                         break;
                     }
 
                     visible.Append(text, 0, fenceIndex);
-                    _buffer.Clear();
-                    _buffer.Append(text, fenceIndex, text.Length - fenceIndex);
+                    ConsumePrefix(fenceIndex);
                     _inBlock = true;
                     continue;
                 }
@@ -90,13 +89,15 @@ namespace ChatSheet.AddIn.Providers
 
                     // 流断在信息串上，块里什么都没有，原样交出去。
                     visible.Append(text);
-                    _buffer.Clear();
+                    ConsumePrefix(text.Length);
                     _inBlock = false;
                     break;
                 }
 
-                var infoString = text.Substring(Fence.Length, infoEnd - Fence.Length).Trim();
-                var closeIndex = FindFenceAtLineStart(text, infoEnd + 1);
+                var fenceLength = Fence.Length;
+                while (fenceLength < infoEnd && text[fenceLength] == '`') { fenceLength++; }
+                var infoString = text.Substring(fenceLength, infoEnd - fenceLength).Trim();
+                var closeIndex = FindClosingFence(text, infoEnd + 1, fenceLength, final);
 
                 if (closeIndex < 0 && !final)
                 {
@@ -118,8 +119,7 @@ namespace ChatSheet.AddIn.Providers
                 }
 
                 var consumed = closeIndex < 0 ? text.Length : EndOfFenceLine(text, closeIndex);
-                _buffer.Clear();
-                _buffer.Append(text, consumed, text.Length - consumed);
+                ConsumePrefix(consumed);
                 _inBlock = false;
 
                 if (closeIndex < 0)
@@ -131,6 +131,34 @@ namespace ChatSheet.AddIn.Providers
             return visible.ToString();
         }
 
+        private void ConsumePrefix(int count)
+        {
+            if (count == 0) { return; }
+            // 增量边界不等于行首；放行前半行后，下一帧仍可能是同一行的示例。
+            _bufferAtLineStart = _buffer[count - 1] == '\n';
+            _buffer.Remove(0, count);
+        }
+
+        private int FindClosingFence(string text, int from, int fenceLength, bool final)
+        {
+            while (true)
+            {
+                var index = FindFenceAtLineStart(text, from);
+                if (index < 0) { return -1; }
+                var lineEnd = text.IndexOf('\n', index);
+                // 等整行收齐再判断，否则下一帧的正文可能证明它不是闭合围栏。
+                if (lineEnd < 0 && !final) { return -1; }
+                if (lineEnd < 0) { lineEnd = text.Length; }
+                var end = index;
+                while (end < lineEnd && text[end] == '`') { end++; }
+                var enoughTicks = end - index >= fenceLength;
+                while (end < lineEnd && (text[end] == ' ' || text[end] == '\t' || text[end] == '\r')) { end++; }
+                if (enoughTicks && end == lineEnd) { return index; }
+                if (lineEnd == text.Length) { return -1; }
+                from = lineEnd + 1;
+            }
+        }
+
         /// <summary>围栏闭合行的结束位置（含换行符）。</summary>
         private static int EndOfFenceLine(string text, int fenceIndex)
         {
@@ -139,7 +167,7 @@ namespace ChatSheet.AddIn.Providers
         }
 
         /// <summary>找出行首的围栏位置。围栏必须顶行，否则缩进的代码里到处都是。</summary>
-        private static int FindFenceAtLineStart(string text, int from)
+        private int FindFenceAtLineStart(string text, int from)
         {
             for (var i = from; i + Fence.Length <= text.Length; i++)
             {
@@ -148,7 +176,7 @@ namespace ChatSheet.AddIn.Providers
                     continue;
                 }
 
-                if (i != 0 && text[i - 1] != '\n')
+                if (i == 0 ? !_bufferAtLineStart : text[i - 1] != '\n')
                 {
                     continue;
                 }
@@ -168,7 +196,7 @@ namespace ChatSheet.AddIn.Providers
         /// 只需看最后几个字符：围栏是行首的三个反引号，因此「换行 + 一两个反引号」
         /// 或「开头的一两个反引号」都要留着。多攥几个字符只是晚一帧显示。
         /// </summary>
-        private static int PartialFenceTail(string text)
+        private int PartialFenceTail(string text)
         {
             if (text.Length == 0)
             {
@@ -190,7 +218,7 @@ namespace ChatSheet.AddIn.Providers
             }
 
             // 反引号要顶行才算围栏，因此前一个字符必须是换行或就是开头。
-            var atLineStart = index < 0 || text[index] == '\n';
+            var atLineStart = index < 0 ? _bufferAtLineStart : text[index] == '\n';
             if (!atLineStart)
             {
                 return 0;
