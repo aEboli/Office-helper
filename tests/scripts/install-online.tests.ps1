@@ -125,7 +125,7 @@ try {
             $state.Release.tag_name = 'v0.10.3.22'
             $state.Release.assets[0].name = 'ChatSheet-v0.10.3.22-win.zip'
             $state.Release.assets[1].name = 'ChatSheet-v0.10.3.22-win.zip.sha256'
-            Expect-Failure '发行包结构不完整'
+            Expect-Failure 'package layout'
         }
         Check '包内安装失败时报告退出码并清理临时目录' {
             Reset-Fixture
@@ -139,6 +139,12 @@ try {
             try { & $installer } catch { $errorMessage = $_.Exception.Message }
             Assert ($null -ne $errorMessage -and $errorMessage.Contains('23')) "未报告安装失败：$errorMessage"
             Assert (-not (Test-Path -LiteralPath $state.WorkRoot)) '安装失败后遗留临时目录。'
+        }
+        Check 'UTF-8 网络文本可以直接通过 Invoke-Expression 执行' {
+            Reset-Fixture
+            $rawScript = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes((Join-Path $repoRoot 'scripts\install-online.ps1')))
+            Invoke-Expression $rawScript
+            Assert ((Get-Content -LiteralPath $marker -Raw) -eq 'install') '管道执行未到达安装入口。'
         }
     } finally { Pop-Location }
 } finally {

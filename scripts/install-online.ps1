@@ -1,11 +1,12 @@
-﻿<#
+<#
 .SYNOPSIS
-下载并安装最新的 Office-helper Windows 发行包。
+Download and install an Office-helper Windows release.
 
 .DESCRIPTION
-只下载 GitHub Release 的 ZIP 和 SHA-256 sidecar，校验通过后解压到临时目录，
-再调用包内安装脚本。-Version 接受带或不带 v 的版本号；
--KeepDownload 将 ZIP 和校验文件保留在当前目录。
+Download the release ZIP and SHA-256 sidecar, verify, extract, and install.
+-Version accepts a version with or without v. -KeepDownload saves both files.
+Keep this bootstrap ASCII without a BOM so PowerShell 5.1 supports both -File
+and the raw GitHub response piped to Invoke-Expression.
 #>
 [CmdletBinding()]
 param(
@@ -32,7 +33,7 @@ try {
     $assetName = "ChatSheet-v$versionName-win.zip"
     $asset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
     $hashAsset = $release.assets | Where-Object { $_.name -eq "$assetName.sha256" } | Select-Object -First 1
-    if (-not $asset -or -not $hashAsset) { throw "Release $($release.tag_name) 缺少 Windows ZIP 或 SHA-256 文件。" }
+    if (-not $asset -or -not $hashAsset) { throw "Release $($release.tag_name) is missing the Windows ZIP or SHA-256 file." }
 
     $zipPath = Join-Path $workRoot $asset.name
     $hashPath = Join-Path $workRoot $hashAsset.name
@@ -41,16 +42,16 @@ try {
 
     $expected = ((Get-Content -LiteralPath $hashPath -Raw) -split '\s+')[0].ToLowerInvariant()
     $actual = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actual -ne $expected) { throw "SHA-256 校验失败：下载内容与 Release 不一致。" }
+    if ($actual -ne $expected) { throw 'SHA-256 verification failed: the download does not match the release.' }
 
     $extractRoot = Join-Path $workRoot 'extracted'
     Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
     $package = Join-Path $extractRoot "ChatSheet-v$versionName-win"
     $installer = Join-Path $package 'scripts\install.ps1'
-    if (-not (Test-Path -LiteralPath $installer)) { throw '发行包结构不完整，缺少安装脚本。' }
-    Write-Host "已校验并解压 Office-helper $($release.tag_name)，即将安装或更新。" -ForegroundColor Green
+    if (-not (Test-Path -LiteralPath $installer)) { throw 'Invalid release package layout: scripts\install.ps1 is missing.' }
+    Write-Host "Verified Office-helper $($release.tag_name); starting install or update." -ForegroundColor Green
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Action install
-    if ($LASTEXITCODE -ne 0) { throw "安装程序失败，退出码 $LASTEXITCODE。" }
+    if ($LASTEXITCODE -ne 0) { throw "Installer failed with exit code $LASTEXITCODE." }
     if ($KeepDownload) {
         Copy-Item -LiteralPath $zipPath -Destination (Join-Path (Get-Location) $asset.name) -Force
         Copy-Item -LiteralPath $hashPath -Destination (Join-Path (Get-Location) $hashAsset.name) -Force
@@ -59,6 +60,6 @@ try {
 finally {
     $safeRoot = [IO.Path]::GetFullPath($workRoot)
     $tempPrefix = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\ChatSheet-install-'
-    if (-not $safeRoot.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw '拒绝清理安装临时目录之外的路径。' }
+    if (-not $safeRoot.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Refusing to remove a path outside the installer temporary directory.' }
     Remove-Item -LiteralPath $safeRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
