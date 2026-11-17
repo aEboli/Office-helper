@@ -11,25 +11,46 @@ namespace ChatSheet.ToolTests
     {
         internal static int Run(Action<string, bool, string> report, string progId)
         {
-            object application = null; object documents = null; object document = null; object content = null; object selection = null; object range = null;
+            object application = null; object documents = null; object document = null; object content = null; object selection = null; object range = null; object previousDocument = null;
+            var ownsApplication = false;
             try
             {
                 var type = Type.GetTypeFromProgID(progId, false);
                 if (type == null) { Console.WriteLine($"未执行 {progId}：未注册该 Word/WPS ProgID。"); return 2; }
                 application = Activator.CreateInstance(type);
-                Set(application, "Visible", false);
                 documents = Get(application, "Documents");
+                ownsApplication = Convert.ToInt32(Get(documents, "Count"), CultureInfo.InvariantCulture) == 0;
+                if (ownsApplication) { Set(application, "Visible", false); }
+                else { previousDocument = Get(application, "ActiveDocument"); }
                 document = Call(documents, "Add");
                 content = Get(document, "Content");
                 try { Call(content, "InsertAfter", "smoke text"); }
                 catch { Set(content, "Text", "smoke text\r"); }
                 var executor = new WordToolExecutor(() => application, progId);
+                var originalText = DocumentText(document);
                 var info = executor.Execute("get_document_info", new JObject());
                 report(progId + " 读取文档信息", info.Ok, info.Error ?? "读取失败");
+                report(progId + " 无副作用识别原生撤销能力", info.Ok &&
+                    JObject.FromObject(((WordDocumentSummary)info.Data).Capabilities).Value<bool?>("undo") == true, "未能识别 Undo 成员。");
+                report(progId + " 读取文档信息保留正文", DocumentText(document) == originalText, "读取摘要改变了正文。");
                 var structure = executor.Execute("read_document_structure", new JObject());
                 var structureData = structure.Ok ? JObject.FromObject(structure.Data) : new JObject();
                 report(progId + " 读取可用文档结构", structure.Ok && structureData.Value<bool?>("ok") == true,
                     structure.Error ?? "结构读取失败");
+                report(progId + " 读取文档结构保留正文", DocumentText(document) == originalText, "读取结构改变了正文。");
+                if (DocumentText(document) != originalText) { return 1; }
+
+                for (var i = 0; i < 3; i++)
+                {
+                    executor.Context.GetSummary();
+                    executor.Execute("read_document_structure", new JObject());
+                }
+                report(progId + " 重复上下文读取保留正文", DocumentText(document) == originalText, "重复读取改变了正文。");
+                var nativeUndo = Call(document, "Undo");
+                report(progId + " 只读探测未消耗原生撤销记录", nativeUndo is bool undoOk && undoOk &&
+                    DocumentText(document) == "\r", "只读探测消耗或新增了原生撤销记录。");
+                Call(document, "Redo");
+                report(progId + " 原生重做恢复原文", DocumentText(document) == originalText, "原生重做无法恢复测试正文。");
 
                 selection = Get(application, "Selection");
                 Call(selection, "SetRange", 0, 10);
@@ -78,8 +99,9 @@ namespace ChatSheet.ToolTests
             finally
             {
                 try { if (document != null) { Call(document, "Close", false); } } catch { }
-                try { if (application != null) { Call(application, "Quit", false); } } catch { }
-                Release(range); Release(selection); Release(content); Release(document); Release(documents); Release(application);
+                try { if (previousDocument != null) { Call(previousDocument, "Activate"); } } catch { }
+                try { if (ownsApplication && application != null) { Call(application, "Quit", false); } } catch { }
+                Release(range); Release(selection); Release(content); Release(document); Release(previousDocument); Release(documents); Release(application);
             }
         }
 
@@ -125,6 +147,13 @@ namespace ChatSheet.ToolTests
             });
             report(progId + " 分页符插入后准确读回", pageBreak.Ok &&
                 JObject.FromObject(pageBreak.Data).Value<string>("readback") == "\f", pageBreak.Error);
+        }
+
+        private static string DocumentText(object document)
+        {
+            var range = Get(document, "Content");
+            try { return Convert.ToString(Get(range, "Text")); }
+            finally { Release(range); }
         }
 
         private static string CellText(object cell)

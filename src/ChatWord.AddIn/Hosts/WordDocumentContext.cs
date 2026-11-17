@@ -312,16 +312,18 @@ namespace ChatWord.AddIn.Hosts
         private static object CapabilityPayload(object document)
         {
             var unsupported = new List<string>();
-            foreach (var member in new[] { "StoryRanges", "Bookmarks", "ContentControls", "Fields", "Comments", "Revisions", "Undo", "Sections" })
+            var hasUndo = WordCom.HasMember(document, "Undo");
+            foreach (var member in new[] { "StoryRanges", "Bookmarks", "ContentControls", "Fields", "Comments", "Revisions", "Sections" })
             {
                 if (!Has(document, member)) { unsupported.Add(member); }
             }
+            if (!hasUndo) { unsupported.Add("Undo"); }
             return new
             {
                 storyRanges = Has(document, "StoryRanges"), bookmarks = Has(document, "Bookmarks"),
                 contentControls = Has(document, "ContentControls"), fields = Has(document, "Fields"),
                 comments = Has(document, "Comments"), revisions = Has(document, "Revisions"),
-                undo = Has(document, "Undo"), pageSetup = Has(document, "Sections"),
+                undo = hasUndo, pageSetup = Has(document, "Sections"),
                 unsupportedMembers = unsupported,
             };
         }

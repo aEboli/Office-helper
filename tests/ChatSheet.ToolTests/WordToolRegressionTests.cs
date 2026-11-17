@@ -11,11 +11,42 @@ namespace ChatSheet.ToolTests
     {
         internal static void Run(Action<string, bool, string> report)
         {
+            ReadOnlyContext(report);
             TableEdits(report);
             TextArguments(report);
             StoryTargets(report);
             Readback(report);
             PageBreaks(report);
+        }
+
+        private static void ReadOnlyContext(Action<string, bool, string> report)
+        {
+            Check(report, "Word 方法存在性查询不执行方法", () =>
+            {
+                var document = new MethodProbe();
+                return WordCom.HasMember(document, "Undo") && document.Calls == 0;
+            });
+            Check(report, "Word 缺失成员查询返回不支持", () =>
+                !WordCom.HasMember(new MethodProbe(), "Missing") && !WordCom.HasMember(null, "Undo"));
+            foreach (var name in new[] { "get_document_info", "read_document_structure" })
+            {
+                Check(report, "Word " + name + " 能力探测不调用撤销且保留正文", () =>
+                {
+                    var document = new FakeDocument();
+                    var before = document.Main.Text;
+                    var executor = Executor(document);
+                    for (var i = 0; i < 3; i++)
+                    {
+                        var result = executor.Execute(name, new JObject());
+                        if (!result.Ok || document.Main.Text != before || document.UndoCalls != 0) { return false; }
+                        var capabilities = name == "get_document_info"
+                            ? JObject.FromObject(((WordDocumentSummary)result.Data).Capabilities)
+                            : (JObject)JObject.FromObject(result.Data)["capabilities"];
+                        if (capabilities?.Value<bool?>("undo") != true) { return false; }
+                    }
+                    return true;
+                });
+            }
         }
 
         private static void TableEdits(Action<string, bool, string> report)
@@ -218,10 +249,22 @@ namespace ChatSheet.ToolTests
             public FakeDocument ActiveDocument { get; set; }
         }
 
+        private sealed class MethodProbe
+        {
+            internal int Calls;
+            public bool Undo() { Calls++; return true; }
+        }
+
         private sealed class FakeDocument
         {
             internal readonly FakeStory Main = new FakeStory(1, "前缀单元格\r\a后缀\r");
             internal readonly FakeStory Header = new FakeStory(7, "页眉文字\r");
+            internal int UndoCalls;
+            // 模拟 COM 按属性读取 Undo 时仍执行撤销的分派行为。
+            public bool Undo
+            {
+                get { UndoCalls++; Main.Text = "\r"; return true; }
+            }
             public int ProtectionType => -1;
             public bool ReadOnly => false;
             public bool TrackRevisions => false;

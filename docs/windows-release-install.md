@@ -2,29 +2,30 @@
 
 Office-helper 同时安装 Excel/WPS 表格和 Word/WPS Writer 两个 COM 入口。旧 Excel 入口仍使用 ChatSheet 的 ProgID、CLSID 和本地目录，仅作为兼容标识，不代表产品仍只支持 Excel。
 
-本文适用于 GitHub Release 中的 `ChatSheet-v0.10.3.20-win.zip`，不适用于从 Git 克隆的源码目录。
+本文适用于 GitHub Release 中的 `ChatSheet-v0.10.3.21-win.zip`，不适用于从 Git 克隆的源码目录。
 
 > [!IMPORTANT]
 > 这是带 PowerShell 安装入口的预构建 ZIP，不是 MSI 或 EXE 安装器。发行包未进行代码签名；请先核对 SHA-256，再运行安装脚本。
 
 ## 发行包内容
 
-解压 `ChatSheet-v0.10.3.20-win.zip` 后，目录结构如下：
+解压 `ChatSheet-v0.10.3.21-win.zip` 后，目录结构如下：
 
 ```text
-ChatSheet-v0.10.3.20-win/
+ChatSheet-v0.10.3.21-win/
 ├── install.bat                  # 双击打开安装菜单
 ├── app/                         # 预构建 COM 加载项、WebView2 面板和依赖
 ├── scripts/
 │   ├── install.ps1              # 安装、卸载和只读诊断入口
+│   ├── install-online.ps1       # 下载并校验 GitHub 最新发行包
 │   ├── menu.ps1                 # install.bat 背后的交互菜单
 │   └── ChatSheet.Registration.psm1
 ├── INSTALL.md                   # 本文副本，方便离线查阅
-├── RELEASE-NOTES.md             # v0.10.3.20 发行说明
+├── RELEASE-NOTES.md             # v0.10.3.21 发行说明
 └── SHA256SUMS.txt               # 包内文件校验清单
 ```
 
-GitHub Release 页面同时提供 `ChatSheet-v0.10.3.20-win.zip.sha256`，用于核对整个 ZIP 文件。
+GitHub Release 页面同时提供 `ChatSheet-v0.10.3.21-win.zip.sha256`，用于核对整个 ZIP 文件。
 
 ## 系统要求与支持范围
 
@@ -38,20 +39,36 @@ GitHub Release 页面同时提供 `ChatSheet-v0.10.3.20-win.zip.sha256`，用于
 | 不需要 | .NET SDK、Node.js、Office.js 开发证书、常驻本地 HTTP 服务 |
 | 不支持 | Excel for Mac、Excel 网页版 |
 
-安装包不会自动更新，也不承诺静默安装或跨用户安装。Windows 或组织策略可能对网络下载的 ZIP 或 PowerShell 脚本显示安全提示；请只从 [Office-helper GitHub Release](https://github.com/aEboli/Office-helper/releases/tag/v0.10.3.20) 下载。
+安装包不会自动更新，也不承诺静默安装或跨用户安装。Windows 或组织策略可能对网络下载的 ZIP 或 PowerShell 脚本显示安全提示；请只从 [Office-helper GitHub Release](https://github.com/aEboli/Office-helper/releases/tag/v0.10.3.21) 下载。
 
 ## 1. 下载并验证 SHA-256
 
-从 [v0.10.3.20 Release](https://github.com/aEboli/Office-helper/releases/tag/v0.10.3.20) 下载下面两个文件到同一目录：
+也可以在 Windows PowerShell 中直接安装或更新最新正式版：
 
-- `ChatSheet-v0.10.3.20-win.zip`
-- `ChatSheet-v0.10.3.20-win.zip.sha256`
+```powershell
+irm https://raw.githubusercontent.com/aEboli/Office-helper/main/scripts/install-online.ps1 | iex
+```
+
+命令会下载最新 Release 的 ZIP 和 SHA-256 文件，校验后解压并调用安装入口；安装仍需要接受 UAC，且应先保存并退出 Excel、Word 和 WPS。它不会构建源码，也不会让已运行的宿主立即切换版本。
+
+如需固定版本或保留下载，在下载并核对 `scripts/install-online.ps1` 后运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-online.ps1 -Version v0.10.3.21 -KeepDownload
+```
+
+`-Version` 可省略前缀 `v`；`-KeepDownload` 在当前目录保留 ZIP 和同名 `.sha256`，临时解压目录会清理。手动下载安装步骤如下。
+
+从 [v0.10.3.21 Release](https://github.com/aEboli/Office-helper/releases/tag/v0.10.3.21) 下载下面两个文件到同一目录：
+
+- `ChatSheet-v0.10.3.21-win.zip`
+- `ChatSheet-v0.10.3.21-win.zip.sha256`
 
 在 PowerShell 中进入下载目录：
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\ChatSheet-v0.10.3.20-win.zip
-Get-Content .\ChatSheet-v0.10.3.20-win.zip.sha256
+Get-FileHash -Algorithm SHA256 .\ChatSheet-v0.10.3.21-win.zip
+Get-Content .\ChatSheet-v0.10.3.21-win.zip.sha256
 ```
 
 以 Release 页面提供的 `.sha256` 文件为准；两条命令中的 64 位十六进制值必须完全一致。若不一致，请不要解压或运行脚本，删除文件后重新下载。
@@ -70,7 +87,7 @@ foreach ($line in $expected) {
 
 ## 2. 解压并安装
 
-1. 右键 ZIP，选择“全部解压缩”，保留完整的 `ChatSheet-v0.10.3.20-win` 目录结构，不要只复制 DLL。
+1. 右键 ZIP，选择“全部解压缩”，保留完整的 `ChatSheet-v0.10.3.21-win` 目录结构，不要只复制 DLL。
 2. 保存并完全关闭 Microsoft Excel、Microsoft Word 和 WPS。覆盖升级时旧宿主可能占用 DLL，安装器会拒绝半新半旧的复制。
 3. 双击解压根目录下的 `install.bat`，在菜单中输入 `1`：
 
@@ -110,8 +127,8 @@ foreach ($line in $expected) {
 ## 4. 重要边界
 
 - 哈希一致只能证明下载的 ZIP 与发布时的字节一致；它不等同于你的 Excel、组织策略、模型服务或工作簿一定可用。
-- 发布包的验证覆盖 Release 构建、工具和可靠性回归、网页测试、真实 WebView2 面板安全测试、OpenSpec 校验、解包布局、包内哈希和宿主加载；首次在新机器上使用仍应先做小范围手工验收。
-- ChatSheet 默认逐项审批写入、格式、排序和结构变化。重要工作簿仍应先备份并人工复核模型生成的修改。
+- 本版验证范围与实测结果见发行说明，覆盖 Release 构建、工具和可靠性回归、网页测试、真实 Office/WPS 宿主专项、OpenSpec 与发行包校验；未做全新机器安装和真实付费模型验收。
+- Office-helper 默认自动执行；可在设置中切换为逐项或每轮审批。重要工作簿和文档仍应先备份并人工复核模型生成的修改。
 - 使用模型时，完成请求所需的提示词、工作簿结构、选区/读取范围结果以及附加的图片和文本文件内容可能会发送给你配置的服务商。请只配置可信端点，并遵守其隐私、计费和数据政策。
 
 更多功能和开发说明请见仓库根目录的 [README](../README.md) 与 [架构说明](architecture.md)。

@@ -1,10 +1,11 @@
-<#
+﻿<#
 .SYNOPSIS
-下载并安装最新的 ChatSheet Windows 发行包。
+下载并安装最新的 Office-helper Windows 发行包。
 
 .DESCRIPTION
 只下载 GitHub Release 的 ZIP 和 SHA-256 sidecar，校验通过后解压到临时目录，
-再调用包内安装脚本。不会执行网络上直接管道下来的 PowerShell 代码。
+再调用包内安装脚本。-Version 接受带或不带 v 的版本号；
+-KeepDownload 将 ZIP 和校验文件保留在当前目录。
 #>
 [CmdletBinding()]
 param(
@@ -15,6 +16,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$Version = $Version.Trim()
 
 $workRoot = Join-Path $env:TEMP ('ChatSheet-install-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
@@ -23,7 +25,8 @@ try {
     $release = if ($Version -eq 'latest') {
         Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/latest" -Headers $headers
     } else {
-        Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/tags/v$Version" -Headers $headers
+        $tagVersion = $Version.TrimStart('v', 'V')
+        Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/tags/v$tagVersion" -Headers $headers
     }
     $versionName = $release.tag_name.TrimStart('v')
     $assetName = "ChatSheet-v$versionName-win.zip"
@@ -33,8 +36,8 @@ try {
 
     $zipPath = Join-Path $workRoot $asset.name
     $hashPath = Join-Path $workRoot $hashAsset.name
-    Invoke-WebRequest -Uri $asset.browser_download_url -Headers $headers -OutFile $zipPath
-    Invoke-WebRequest -Uri $hashAsset.browser_download_url -Headers $headers -OutFile $hashPath
+    Invoke-WebRequest -Uri $asset.browser_download_url -Headers $headers -OutFile $zipPath -UseBasicParsing
+    Invoke-WebRequest -Uri $hashAsset.browser_download_url -Headers $headers -OutFile $hashPath -UseBasicParsing
 
     $expected = ((Get-Content -LiteralPath $hashPath -Raw) -split '\s+')[0].ToLowerInvariant()
     $actual = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -42,14 +45,20 @@ try {
 
     $extractRoot = Join-Path $workRoot 'extracted'
     Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
-    $package = Get-ChildItem -LiteralPath $extractRoot -Directory | Select-Object -First 1
-    $installer = Join-Path $package.FullName 'scripts\install.ps1'
+    $package = Join-Path $extractRoot "ChatSheet-v$versionName-win"
+    $installer = Join-Path $package 'scripts\install.ps1'
     if (-not (Test-Path -LiteralPath $installer)) { throw '发行包结构不完整，缺少安装脚本。' }
-    Write-Host "已校验并解压 $($release.tag_name)，即将启动安装菜单。" -ForegroundColor Green
+    Write-Host "已校验并解压 Office-helper $($release.tag_name)，即将安装或更新。" -ForegroundColor Green
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Action install
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    if ($KeepDownload) { Copy-Item -LiteralPath $zipPath -Destination (Join-Path (Get-Location) $asset.name) -Force }
+    if ($LASTEXITCODE -ne 0) { throw "安装程序失败，退出码 $LASTEXITCODE。" }
+    if ($KeepDownload) {
+        Copy-Item -LiteralPath $zipPath -Destination (Join-Path (Get-Location) $asset.name) -Force
+        Copy-Item -LiteralPath $hashPath -Destination (Join-Path (Get-Location) $hashAsset.name) -Force
+    }
 }
 finally {
-    if (-not $KeepDownload) { Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    $safeRoot = [IO.Path]::GetFullPath($workRoot)
+    $tempPrefix = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\ChatSheet-install-'
+    if (-not $safeRoot.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw '拒绝清理安装临时目录之外的路径。' }
+    Remove-Item -LiteralPath $safeRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

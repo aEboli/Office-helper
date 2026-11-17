@@ -12,7 +12,7 @@ Windows COM 加载项 · WebView2 面板 · 流式对话 · 可审阅的 Excel/W
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows&logoColor=white)](#安装)
 [![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4?logo=dotnet&logoColor=white)](#从源码构建)
 
-[下载公开版 v0.10.3.20](https://github.com/aEboli/Office-helper/releases/tag/v0.10.3.20) · [发行说明](docs/releases/v0.10.3.20.md) · [提交问题](https://github.com/aEboli/Office-helper/issues)
+[下载公开版 v0.10.3.21](https://github.com/aEboli/Office-helper/releases/tag/v0.10.3.21) · [发行说明](docs/releases/v0.10.3.21.md) · [提交问题](https://github.com/aEboli/Office-helper/issues)
 
 </div>
 
@@ -21,7 +21,7 @@ Windows COM 加载项 · WebView2 面板 · 流式对话 · 可审阅的 Excel/W
 
 ## 先看这里
 
-Office-helper 在 Excel/WPS 表格中读取当前工作簿和选区，在 Word/WPS Writer 中读取当前文档和明确 Story 目标，再通过对应工具完成分析与修改。当前源码版本 0.10.3.20 默认全自动执行，操作卡片报告实际结果；仍可在设置中主动选择逐项或每轮审批。Excel 与 Word 入口统一显示为 Office-helper，旧 ChatSheet ProgID/CLSID 仅用于兼容已有安装。
+Office-helper 在 Excel/WPS 表格中读取当前工作簿和选区，在 Word/WPS Writer 中读取当前文档和明确 Story 目标，再通过对应工具完成分析与修改。当前源码版本 0.10.3.21 默认全自动执行，操作卡片报告实际结果；仍可在设置中主动选择逐项或每轮审批。Excel 与 Word 入口统一显示为 Office-helper，旧 ChatSheet ProgID/CLSID 仅用于兼容已有安装。
 
 ~~~text
 选区 / 工作簿 → 模型理解上下文 → 表格工具执行 → 操作卡片与结果核验
@@ -29,9 +29,17 @@ Office-helper 在 Excel/WPS 表格中读取当前工作簿和选区，在 Word/W
 
 适合解释公式、清理数据、批量改格式、合并标题、创建表格或图表，也适合把自然语言要求变成能复核、能撤销的表格操作。
 
+## v0.10.3.21 更新（2026-11-17）
+
+- 修复 WPS Writer 在对话开始、刷新摘要或读取文档结构时误触发原生撤销、导致刚输入或粘贴正文消失的问题。能力探测只查询成员，不执行 `Undo`；Microsoft Word 同步验证正文和撤销记录保持完整。
+- 将 2026-11-11 的 Excel、Word、停止与审批、模型协议修复一并纳入 Windows 发行包。
+- 更新命令安装器：兼容 Windows PowerShell 的基础下载方式，支持带或不带 `v` 的固定版本号，校验发行目录，保留下载时同时保存 ZIP 与校验文件并清理临时目录。
+
+安装或更新后请重新打开宿主。详情见 [v0.10.3.21 发行说明](docs/releases/v0.10.3.21.md) 和 [Word 只读上下文修复验证](docs/verification-word-readonly-context.md)。
+
 ## 工具调用修复（2026-11-11）
 
-本轮修复更新 `main` 源码，现有 v0.10.3.20 Windows ZIP 未重新打包；需要这些修复时请从源码构建。
+以下修复已纳入 v0.10.3.21 Windows 发行包；下列验证数量是 2026-11-11 的专项记录。
 
 - **Excel**：写入前完整校验矩阵、格式和对象调用参数；分页读取、分块写入与结果核验沿用首次解析的工作表，避免宿主切换活动工作簿后操作错位。
 - **Word/WPS Writer**：非法或缺失参数返回可纠正的错误；修复嵌套表格定位、单元格替换残留末字和读回失败被误报为成功，分页符仅允许插入折叠位置。
@@ -80,12 +88,12 @@ Word 段落工具以字符为单位设置首行缩进，并读回检查实际值
 
 ### 预构建 Windows ZIP（推荐）
 
-1. 下载 [`ChatSheet-v0.10.3.20-win.zip`](https://github.com/aEboli/Office-helper/releases/download/v0.10.3.20/ChatSheet-v0.10.3.20-win.zip) 和同名 `.sha256` 文件。
+1. 下载 [`ChatSheet-v0.10.3.21-win.zip`](https://github.com/aEboli/Office-helper/releases/download/v0.10.3.21/ChatSheet-v0.10.3.21-win.zip) 和同名 `.sha256` 文件。
 2. 在 PowerShell 中核对哈希：
 
    ~~~powershell
-   Get-FileHash -Algorithm SHA256 .\ChatSheet-v0.10.3.20-win.zip
-   Get-Content .\ChatSheet-v0.10.3.20-win.zip.sha256
+   Get-FileHash -Algorithm SHA256 .\ChatSheet-v0.10.3.21-win.zip
+   Get-Content .\ChatSheet-v0.10.3.21-win.zip.sha256
    ~~~
 
 3. 完整解压 ZIP，双击根目录 `install.bat`，选择安装或更新。
@@ -143,6 +151,7 @@ dotnet build ChatSheet.sln --configuration Release
 .\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe --wps --project-audit-tests
 .\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe --word-smoke
 .\tests\ChatSheet.ToolTests\bin\Release\ChatSheet.ToolTests.exe --wps-word-smoke
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\scripts\install-online.tests.ps1
 Get-ChildItem tests\web\*.test.mjs | ForEach-Object { node $_.FullName; if ($LASTEXITCODE -ne 0) { throw $_.Name } }
 openspec validate --all --strict
 ~~~
@@ -153,7 +162,8 @@ openspec validate --all --strict
 
 ## 文档
 
-- [v0.10.3.20 发行说明](docs/releases/v0.10.3.20.md)
+- [v0.10.3.21 发行说明](docs/releases/v0.10.3.21.md)
+- [Word 只读上下文修复验证（2026-11-17）](docs/verification-word-readonly-context.md)
 - [工具调用排查与验证记录（2026-11-11）](docs/verification-tool-call-audit.md)
 - [Windows 发行包安装、校验与卸载](docs/windows-release-install.md)
 - [架构说明与常见宿主陷阱](docs/architecture.md)
@@ -169,10 +179,12 @@ GitHub 仓库目前为公开状态，但尚未附带许可证。公开可见不�
 
 Windows 用户可以运行：
 
-    irm https://raw.githubusercontent.com/aEboli/Office-helper/main/scripts/install-online.ps1 | iex
+```powershell
+irm https://raw.githubusercontent.com/aEboli/Office-helper/main/scripts/install-online.ps1 | iex
+```
 
-安装器会从 GitHub Release 下载 ZIP 和 SHA-256 sidecar，校验一致后再调用本地安装脚本。也可以下载 ZIP 后双击根目录的 install.bat，菜单提供安装、卸载和诊断。
+安装器默认从 GitHub 最新正式版下载 ZIP 和 SHA-256 sidecar，校验一致后调用包内安装脚本；请先保存并完全退出 Excel、Word 和 WPS，接受 UAC 后完成安装，再重新打开宿主。下载脚本后也可传入 `-Version v0.10.3.21 -KeepDownload` 固定版本并保留 ZIP 与校验文件。也可以下载 ZIP 后双击根目录的 `install.bat`，菜单提供安装、卸载和诊断。
 
-当前版本是 Windows COM 加载项，依赖 Excel for Windows、.NET Framework 4.8 和 WebView2，不能安装到 Excel for Mac。仓库提供 install.command 和 scripts/install-macos.sh 作为一键兼容性检查；它不会修改 macOS 或伪装成已安装。macOS 原生支持需要 Office.js 加载项和跨平台本地服务，尚未包含在 v0.10.3.20。
+当前版本是 Windows COM 加载项，依赖 Excel for Windows、.NET Framework 4.8 和 WebView2，不能安装到 Excel for Mac。仓库提供 install.command 和 scripts/install-macos.sh 作为一键兼容性检查；它不会修改 macOS 或伪装成已安装。macOS 原生支持需要 Office.js 加载项和跨平台本地服务，尚未包含在 v0.10.3.21。
 
 - [macOS 安装边界](docs/macos-install.md)

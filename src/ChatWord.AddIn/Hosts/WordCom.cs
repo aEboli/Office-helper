@@ -46,6 +46,32 @@ namespace ChatWord.AddIn.Hosts
             catch { return false; }
         }
 
+        internal static bool HasMember(object target, string name)
+        {
+            if (target == null) { return false; }
+            if (!Marshal.IsComObject(target))
+            { return target.GetType().GetMember(name, BindingFlags.Instance | BindingFlags.Public).Length > 0; }
+            try
+            {
+                var dispatch = (IDispatchNames)target;
+                var iid = Guid.Empty;
+                // 只解析 DISPID，不 Invoke；部分 Writer 宿主把 Undo 的属性读取当作方法调用。
+                return dispatch.GetIDsOfNames(ref iid, new[] { name }, 1, ComCulture.LCID, new int[1]) >= 0;
+            }
+            catch { return false; }
+        }
+
+        [ComImport, Guid("00020400-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IDispatchNames
+        {
+            [PreserveSig] int GetTypeInfoCount(out uint count);
+            [PreserveSig] int GetTypeInfo(uint index, int lcid, out IntPtr typeInfo);
+            [PreserveSig] int GetIDsOfNames(ref Guid iid,
+                [MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.LPWStr, SizeParamIndex = 2)] string[] names,
+                uint count, int lcid,
+                [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 2)] int[] ids);
+        }
+
         internal static string String(object target, string name, string fallback = "")
         {
             return TryGet(target, name, out var value) && value != null
